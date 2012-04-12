@@ -132,14 +132,25 @@ stop(#state{data_ref=DataRef,
                  {ok, not_found, state()} |
                  {error, term(), state()}.
 get(Bucket, Key, State=#state{data_ref=DataRef,
+                              used_memory=UsedMemory,
+                              max_memory=MaxMemory,
                               ttl=TTL}) ->
     case ets:lookup(DataRef, {Bucket, Key}) of
         [] -> {error, not_found, State};
-        [{{Bucket, Key}, {{ts, Timestamp}, Val}}] ->
+        [{{Bucket, Key}, {{ts, Timestamp}, Val}}=Object] ->
             case exceeds_ttl(Timestamp, TTL) of
                 true ->
-                    delete(Bucket, Key, undefined, State),
-                    {error, not_found, State};
+                    %% Because we do not have the IndexSpecs, we must
+                    %% delete the object directly and all index
+                    %% entries blindly using match_delete.
+                    ets:delete(DataRef, {Bucket, Key}),
+                    case MaxMemory of
+                        undefined ->
+                            UsedMemory1 = UsedMemory;
+                        _ ->
+                            UsedMemory1 = UsedMemory - object_size(Object)
+                    end,
+                    {error, not_found, State#state{used_memory=UsedMemory1}};
                 false ->
                     {ok, Val, State}
             end;
