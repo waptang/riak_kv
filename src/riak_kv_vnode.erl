@@ -81,6 +81,7 @@
                 mod :: module(),
                 modstate :: term(),
                 mrjobs :: term(),
+                obj_modified_hooks :: [{module(),atom()}],
                 vnodeid :: undefined | binary(),
                 delete_mode :: keep | immediate | pos_integer(),
                 bucket_buf_size :: pos_integer(),
@@ -356,8 +357,8 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
                Sender, State=#state{idx=Idx}) ->
     StartTS = os:timestamp(),
     riak_core_vnode:reply(Sender, {w, Idx, ReqId}),
-    UpdState = do_put(Sender, BKey,  Object, ReqId, StartTime, Options, State),
-    update_vnode_stats(vnode_put, Idx, StartTS),
+    UpdState = do_put(Sender, BKey,  Object, ReqId, StartTime, Options,
+                      StartTS, State),
     {noreply, UpdState};
 
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},Sender,State) ->
@@ -713,7 +714,7 @@ handle_exit(_Pid, Reason, State) ->
 
 %% @private
 %% upon receipt of a client-initiated put
-do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
+do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, StartTS, State) ->
     case proplists:get_value(bucket_props, Options) of
         undefined ->
             {ok,Ring} = riak_core_ring_manager:get_my_ring(),
@@ -738,7 +739,7 @@ do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
                        starttime=StartTime,
                        prunetime=PruneTime},
     {PrepPutRes, UpdPutArgs} = prepare_put(State, PutArgs),
-    {Reply, UpdState} = perform_put(PrepPutRes, State, UpdPutArgs),
+    {Reply, UpdState} = perform_put(PrepPutRes, State, UpdPutArgs, StartTS),
     riak_core_vnode:reply(Sender, Reply),
 
     update_index_write_stats(UpdPutArgs#putargs.is_index, UpdPutArgs#putargs.index_specs),
@@ -847,23 +848,28 @@ prepare_put(#state{vnodeid=VId,
 perform_put({false, Obj},
             #state{idx=Idx}=State,
             #putargs{returnbody=true,
-                     reqid=ReqID}) ->
+                     reqid=ReqID},
+           _) ->
     {{dw, Idx, Obj, ReqID}, State};
 perform_put({false, _Obj},
             #state{idx=Idx}=State,
             #putargs{returnbody=false,
-                     reqid=ReqId}) ->
+                     reqid=ReqId},
+            _) ->
     {{dw, Idx, ReqId}, State};
 perform_put({true, Obj},
             #state{idx=Idx,
                    mod=Mod,
-                   modstate=ModState}=State,
+                   modstate=ModState,
+                   obj_modified_hooks=Hooks}=State,
             #putargs{returnbody=RB,
                      bkey={Bucket, Key},
                      reqid=ReqID,
-                     index_specs=IndexSpecs}) ->
+                     index_specs=IndexSpecs},
+           StartTS) ->
     Val = term_to_binary(Obj),
-    case Mod:put(Bucket, Key, IndexSpecs, Val, ModState) of
+    case backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
+                     ModState, Idx, StartTS) of
         {ok, UpdModState} ->
             update_hashtree(Bucket, Key, Val, State),
             case RB of
@@ -1123,7 +1129,8 @@ do_get_vclock({Bucket, Key}, Mod, ModState) ->
 do_diffobj_put({Bucket, Key}, DiffObj,
                StateData=#state{mod=Mod,
                                 modstate=ModState,
-                                idx=Idx}) ->
+                                idx=Idx,
+                                obj_modified_hooks=Hooks}) ->
     StartTS = os:timestamp(),
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
     IndexBackend = lists:member(indexes, Capabilities),
@@ -1136,12 +1143,13 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                     IndexSpecs = []
             end,
             Val = term_to_binary(DiffObj),
-            Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
+            Res =
+                backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
+                            ModState, Idx, StartTS),
             case Res of
                 {ok, _UpdModState} ->
                     update_hashtree(Bucket, Key, Val, StateData),
-                    update_index_write_stats(IndexBackend, IndexSpecs),
-                    update_vnode_stats(vnode_put, Idx, StartTS);
+                    update_index_write_stats(IndexBackend, IndexSpecs);
                 _ -> nop
             end,
             Res;
@@ -1162,12 +1170,12 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                             IndexSpecs = []
                     end,
                     Val = term_to_binary(AMObj),
-                    Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
+                    Res = backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
+                                      ModState, Idx, StartTS),
                     case Res of
                         {ok, _UpdModState} ->
                             update_hashtree(Bucket, Key, Val, StateData),
-                            update_index_write_stats(IndexBackend, IndexSpecs),
-                            update_vnode_stats(vnode_put, Idx, StartTS);
+                            update_index_write_stats(IndexBackend, IndexSpecs);
                         _ ->
                             nop
                     end,
@@ -1322,6 +1330,20 @@ object_info({Bucket, _Key}=BKey) ->
     Hash = riak_core_util:chash_key(BKey),
     {Bucket, Hash}.
 
+%% @private
+backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, ModState, Idx, StartTS) ->
+    Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
+    case Res of
+        {ok, _} ->
+            [run_hook(H, Val) || H <- Hooks],
+            riak_kv_stat:update(vnode_put, Idx, StartTS);
+        _ -> ok
+    end,
+    Res.
+
+%% @private
+run_hook({M, F}, Val) ->
+    M:F(Val).
 
 -ifdef(TEST).
 
