@@ -884,7 +884,7 @@ perform_put({true, Obj},
            StartTS) ->
     Val = term_to_binary(Obj),
     Hooks = get_obj_modified_hooks(BProps),
-    case backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
+    case backend_put(Mod, Bucket, Key, IndexSpecs, Obj, Hooks,
                      State, ModState, Idx, StartTS) of
         {ok, UpdModState} ->
             update_hashtree(Bucket, Key, Val, State),
@@ -1157,10 +1157,9 @@ do_diffobj_put({Bucket, Key}, DiffObj, BProps,
                 false ->
                     IndexSpecs = []
             end,
-            Val = term_to_binary(DiffObj),
             Hooks = get_obj_modified_hooks(BProps),
             Res =
-                backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
+                backend_put(Mod, Bucket, Key, IndexSpecs, DiffObj, Hooks,
                             StateData, ModState, Idx, StartTS),
             case Res of
                 {ok, _UpdModState} ->
@@ -1185,9 +1184,8 @@ do_diffobj_put({Bucket, Key}, DiffObj, BProps,
                         false ->
                             IndexSpecs = []
                     end,
-                    Val = term_to_binary(AMObj),
                     Hooks = get_obj_modified_hooks(BProps),
-                    Res = backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
+                    Res = backend_put(Mod, Bucket, Key, IndexSpecs, AMObj, Hooks,
                                       StateData, ModState, Idx, StartTS),
                     case Res of
                         {ok, _UpdModState} ->
@@ -1348,12 +1346,13 @@ object_info({Bucket, _Key}=BKey) ->
     {Bucket, Hash}.
 
 %% @private
-backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
+backend_put(Mod, Bucket, Key, IndexSpecs, Obj, Hooks,
             State, ModState, Idx, StartTS) ->
+    Val = term_to_binary(Obj),
     Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
     case Res of
         {ok, _} ->
-            [run_hook(H, Val, State) || H <- Hooks],
+            [run_hook(H, Obj, State) || H <- Hooks],
             riak_kv_stat:update(vnode_put, Idx, StartTS);
         _ -> ok
     end,
