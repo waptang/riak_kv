@@ -29,6 +29,7 @@
 -export([test_vnode/1, put/7]).
 -export([start_vnode/1,
          get/3,
+         get_state_partition/1,
          del/3,
          put/6,
          local_get/2,
@@ -160,6 +161,9 @@ del(Preflist, BKey, ReqId) ->
                                    ?KV_DELETE_REQ{bkey=BKey,
                                                   req_id=ReqId},
                                    riak_kv_vnode_master).
+
+get_state_partition(#state{idx=Partition}) ->
+    Partition.
 
 %% Issue a put for the object to the preflist, expecting a reply
 %% to an FSM.
