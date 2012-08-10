@@ -877,7 +877,7 @@ perform_put({true, Obj},
     Val = term_to_binary(Obj),
     Hooks = get_obj_modified_hooks(BProps),
     case backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
-                     ModState, Idx, StartTS) of
+                     State, ModState, Idx, StartTS) of
         {ok, UpdModState} ->
             update_hashtree(Bucket, Key, Val, State),
             case RB of
@@ -1134,7 +1134,6 @@ do_get_vclock({Bucket, Key}, Mod, ModState) ->
 
 %% @private
 %% upon receipt of a handoff datum, there is no client FSM
-<<<<<<< HEAD
 do_diffobj_put({Bucket, Key}, DiffObj, BProps,
                StateData=#state{mod=Mod,
                                 modstate=ModState,
@@ -1154,7 +1153,7 @@ do_diffobj_put({Bucket, Key}, DiffObj, BProps,
             Hooks = get_obj_modified_hooks(BProps),
             Res =
                 backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
-                            ModState, Idx, StartTS),
+                            StateData, ModState, Idx, StartTS),
             case Res of
                 {ok, _UpdModState} ->
                     update_hashtree(Bucket, Key, Val, StateData),
@@ -1181,7 +1180,7 @@ do_diffobj_put({Bucket, Key}, DiffObj, BProps,
                     Val = term_to_binary(AMObj),
                     Hooks = get_obj_modified_hooks(BProps),
                     Res = backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
-                                      ModState, Idx, StartTS),
+                                      StateData, ModState, Idx, StartTS),
                     case Res of
                         {ok, _UpdModState} ->
                             update_hashtree(Bucket, Key, Val, StateData),
@@ -1341,11 +1340,12 @@ object_info({Bucket, _Key}=BKey) ->
     {Bucket, Hash}.
 
 %% @private
-backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, ModState, Idx, StartTS) ->
+backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
+            State, ModState, Idx, StartTS) ->
     Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
     case Res of
         {ok, _} ->
-            [run_hook(H, Val) || H <- Hooks],
+            [run_hook(H, Val, State) || H <- Hooks],
             riak_kv_stat:update(vnode_put, Idx, StartTS);
         _ -> ok
     end,
@@ -1356,8 +1356,8 @@ get_obj_modified_hooks(BProps) ->
     proplists:get_value(obj_modified_hooks, BProps, []).
 
 %% @private
-run_hook({M, F}, Val) ->
-    M:F(Val).
+run_hook({M, F}, Val, State) ->
+    M:F(Val, State).
 
 -ifdef(TEST).
 
