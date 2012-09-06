@@ -773,6 +773,9 @@ do_backend_delete(BKey, RObj, State = #state{mod = Mod, modstate = ModState}) ->
     case Mod:delete(Bucket, Key, IndexSpecs, ModState) of
         {ok, UpdModState} ->
             riak_kv_index_hashtree:delete(BKey, State#state.hashtrees),
+            BProps = riak_core_bucket:get_bucket(Bucket),
+            Hooks = get_obj_modified_hooks(BProps),
+            [run_hook(H, RObj, delete, State) || H <- Hooks],
             update_index_delete_stats(IndexSpecs),
             State#state{modstate = UpdModState};
         {error, _Reason, UpdModState} ->
@@ -1163,6 +1166,7 @@ do_diffobj_put({Bucket, Key}, DiffObj, BProps,
                             StateData, ModState, handoff, Idx, StartTS),
             case Res of
                 {ok, _UpdModState} ->
+                    Val = term_to_binary(DiffObj),
                     update_hashtree(Bucket, Key, Val, StateData),
                     update_index_write_stats(IndexBackend, IndexSpecs);
                 _ -> nop
@@ -1189,6 +1193,7 @@ do_diffobj_put({Bucket, Key}, DiffObj, BProps,
                                       StateData, ModState, handoff, Idx, StartTS),
                     case Res of
                         {ok, _UpdModState} ->
+                            Val = term_to_binary(AMObj),
                             update_hashtree(Bucket, Key, Val, StateData),
                             update_index_write_stats(IndexBackend, IndexSpecs);
                         _ ->
