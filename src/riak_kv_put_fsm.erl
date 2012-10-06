@@ -191,7 +191,12 @@ prepare(timeout, StateData0 = #state{from = From, robj = RObj,
     N = proplists:get_value(n_val,BucketProps),
     StatTracked = proplists:get_value(stat_tracked, BucketProps, false),
     UpNodes = riak_core_node_watcher:nodes(riak_kv),
-    Preflist2 = riak_core_apl:get_apl_ann(DocIdx, N, Ring, UpNodes),
+    Preflist2 = case get_option(primary, Options, false) of
+                    true ->
+                        riak_core_apl:get_primary_apl(DocIdx, N, Ring, UpNodes);
+                    false ->
+                        riak_core_apl:get_apl_ann(DocIdx, N, Ring, UpNodes)
+                end,
     %% Check if this node is in the preference list so it can coordinate
     LocalPL = [IndexNode || {{_Index, Node} = IndexNode, _Type} <- Preflist2,
                         Node == node()],
