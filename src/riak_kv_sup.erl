@@ -33,6 +33,10 @@
 
 -define (IF (Bool, A, B), if Bool -> A; true -> B end).
 
+%% Helper macro for declaring children of supervisor
+-define(CHILD(I, Type, Timeout), {I, {I, start_link, []}, permanent, Timeout, Type, [I]}).
+-define(CHILD(I, Type), ?CHILD(I, Type, 5000)).
+
 %% @spec start_link() -> ServerRet
 %% @doc API for starting the supervisor.
 start_link() ->
@@ -110,6 +114,8 @@ init([]) ->
 
     % Build the process list...
     Processes = lists:flatten([
+        ?CHILD(riak_kv_coordinator_manager, worker),
+        ?CHILD(riak_kv_ensemble, worker),
         ?IF(HasStorageBackend, VMaster, []),
         GetFsmSup,
         PutFsmSup,

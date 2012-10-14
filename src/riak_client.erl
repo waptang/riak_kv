@@ -234,7 +234,12 @@ get(Bucket, Key) ->
 get(Bucket, Key, Options) when is_list(Options) ->
     Me = self(),
     ReqId = mk_reqid(),
-    riak_kv_get_fsm_sup:start_get_fsm(Node, [{raw, ReqId, Me}, Bucket, Key, Options]),
+    case consistent(Bucket, Options) of
+        true ->
+            riak_kv_coordinator:read(Node, ReqId, Me, Bucket, Key, Options);
+        false ->
+            riak_kv_get_fsm_sup:start_get_fsm(Node, [{raw, ReqId, Me}, Bucket, Key, Options])
+    end,
     %% TODO: Investigate adding a monitor here and eliminating the timeout.
     Timeout = recv_timeout(Options),
     wait_for_reqid(ReqId, Timeout);
@@ -296,10 +301,10 @@ put(RObj, Options) when is_list(Options) ->
     ReqId = mk_reqid(),
     case ClientId of
         undefined ->
-            riak_kv_put_fsm_sup:start_put_fsm(Node, [{raw, ReqId, Me}, RObj, Options]);
+            do_put(Node, ReqId, Me, RObj, Options);
         _ ->
             UpdObj = riak_object:increment_vclock(RObj, ClientId),
-            riak_kv_put_fsm_sup:start_put_fsm(Node, [{raw, ReqId, Me}, UpdObj, [asis|Options]])
+            do_put(Node, ReqId, Me, UpdObj, [asis|Options])
     end,
     %% TODO: Investigate adding a monitor here and eliminating the timeout.
     Timeout = recv_timeout(Options),
@@ -350,6 +355,15 @@ put(RObj, W, DW, Timeout) -> THIS:put(RObj,  [{w, W}, {dw, DW}, {timeout, Timeou
 %%      TimeoutMillisecs passes.
 put(RObj, W, DW, Timeout, Options) ->
    THIS:put(RObj, [{w, W}, {dw, DW}, {timeout, Timeout} | Options]).
+
+do_put(Node, ReqId, Me, RObj, Options) ->
+    Bucket = riak_object:bucket(RObj),
+    case consistent(Bucket, Options) of
+        true ->
+            riak_kv_coordinator:write(Node, ReqId, Me, RObj, Options);
+        false ->
+            riak_kv_put_fsm_sup:start_put_fsm(Node, [{raw, ReqId, Me}, RObj, Options])
+    end.
 
 %% @spec delete(riak_object:bucket(), riak_object:key()) ->
 %%        ok |
@@ -832,3 +846,8 @@ recv_timeout(Options) ->
             %% Otherwise use the directly supplied timeout.
             Timeout
     end.
+
+consistent(<<$c,$#,_/binary>>, Options) ->
+    not lists:member(direct, Options);
+consistent(_, _) ->
+    false.
