@@ -74,7 +74,19 @@
 -export([to_json/1, from_json/1]).
 -export([index_specs/1, diff_index_specs/2]).
 -export([set_contents/2, set_vclock/2]). %% INTERNAL, only for riak_*
--export([new_v1/2]). %% INTERNAL
+-export([new_v1/2]). %% TODO: remove when referenced.
+-export([robj_to_binary/1, binary_to_robj/1]).
+
+%% @doc Convert riak object to binary form
+-spec robj_to_binary(#r_object{}) -> r_object_bin().
+robj_to_binary(_Robject) ->
+    throw ({error, unimplemented}).
+
+%% @doc Convert binary object to riak object
+-spec binary_to_robj(binary()) -> #r_object{}.
+binary_to_robj(_Bin) ->
+    %% pattern match on binary
+    throw ({error, unimplemented}).
 
 %% @doc Contruct new binary riak objects.
 -spec new_v1(vclock:vclock(), [#r_content{}]) -> r_object_bin().
