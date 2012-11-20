@@ -26,6 +26,7 @@
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
+%% TODO: refactor to remove wm_raw into two files, one that we pull in.
 -include("riak_kv_wm_raw.hrl").
 
 -export_type([riak_object/0, bucket/0, key/0, value/0]).
@@ -49,12 +50,20 @@
           updatemetadata=dict:store(clean, true, dict:new()) :: dict(),
           updatevalue :: term()
          }).
--opaque riak_object() :: #r_object{}.
+-opaque riak_object() :: #r_object{} | r_object_bin().
 
 -type index_op() :: add | remove.
 -type index_value() :: integer() | binary().
 
 -define(MAX_KEY_SIZE, 65536).
+
+%% Riak Objects in binary format (on disk)
+-type r_object_bin() :: binary().
+-type r_content_bin() :: binary().
+%% -type rfc1123_date() :: string(). % LastMod Date
+
+-define(MAGIC, <<53>>).  %% Magic number, as opposed to 131 for Erlang term-to-binary magic
+                         %% Shanley's(11) + Joe's(42)
 
 -export([new/3, new/4, ensure_robject/1, ancestors/1, reconcile/2, equal/2]).
 -export([increment_vclock/2, increment_vclock/3]).
@@ -65,6 +74,50 @@
 -export([to_json/1, from_json/1]).
 -export([index_specs/1, diff_index_specs/2]).
 -export([set_contents/2, set_vclock/2]). %% INTERNAL, only for riak_*
+-export([new_v1/2]). %% INTERNAL
+
+%% @doc Contruct new binary riak objects.
+-spec new_v1(vclock:vclock(), [#r_content{}]) -> r_object_bin().
+new_v1(Vclock, Siblings) ->
+    Ver = <<1>>,
+    VclockBin = term_to_binary(Vclock),
+    VclockLen = byte_size(VclockBin),
+    SibCount = length(Siblings),
+    SibsBin = bin_contents(Siblings),
+    Magic = ?MAGIC,
+    <<Magic/binary, Ver, VclockLen:32/integer, VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
+
+-spec bin_content(#r_content{}) -> r_content_bin().
+bin_content(#r_content{metadata=Meta, value=Val}) ->
+    ValBin = term_to_binary(Val),
+    ValLen = byte_size(ValBin),
+    Folder = fun(Key, Value, {{Vt,Del,Lm},RestBin}) ->
+                     case Key of
+                         ?MD_VTAG -> {{Value, Del, Lm}, RestBin};
+                         ?MD_LASTMOD -> {{Vt, Del, Value}, RestBin};
+                         ?MD_DELETED when Value =:= true -> {{Vt, <<1>>, Lm}, RestBin};
+                         ?MD_DELETED -> {{Vt, <<0>>, Lm}, RestBin};
+                         _Other ->
+                             ValueBin = term_to_binary(Value),
+                             ValueLen = byte_size(ValueBin),
+                             KeyBin = term_to_binary(Key),
+                             KeyLen = byte_size(KeyBin),
+                             Binary = <<KeyLen:32/integer, KeyBin/binary, ValueLen:32/integer, ValueBin/binary>>,
+                             <<RestBin, Binary>>
+                     end
+             end,
+    {{VTag, Deleted, LastMod}, RestBin} = dict:fold(Folder, {{undefined, <<0>>, undefined}, <<>>}, Meta),
+    LastModLen = byte_size(LastMod),
+    MetaBin = <<LastMod:LastModLen, VTag:128, Deleted:1/binary-unit:8, RestBin/binary>>,
+    MetaLen = byte_size(MetaBin),
+    <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary>>.
+
+    
+bin_contents(Contents) ->
+    F = fun(Content, Acc) ->
+                <<Acc, (bin_content(Content))>>
+        end,
+    lists:foldl(F, <<>>, Contents).
 
 %% @doc Constructor for new riak objects.
 -spec new(Bucket::bucket(), Key::key(), Value::value()) -> riak_object().
