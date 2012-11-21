@@ -128,14 +128,25 @@ sibs_of_binary(Count, SibsBin, Result) ->
     sibs_of_binary(Count-1, SibsRest, [Sib | Result]).
 
 sib_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary, Rest/binary>>) ->
-    <<LMMega:32/integer, LMSecs:32/integer, LMMicro:32/integer, VTag:128, Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
+    <<LMMega:32/integer, LMSecs:32/integer, LMMicro:32/integer, VTag:16/binary, Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
     DeletedVal = case Deleted of <<1>> -> true; _False -> false end,
-    MDList = [{?MD_LASTMOD, {LMMega, LMSecs, LMMicro}}, {?MD_VTAG, VTag}, {?MD_DELETED, DeletedVal}] ++ meta_of_binary(MetaRestBin),
+    MDList0 = [{?MD_LASTMOD, {LMMega, LMSecs, LMMicro}}, {?MD_VTAG, binary_to_list(VTag)}],
+    MDList = case DeletedVal of 
+                 true -> 
+                     MDList0 
+                         ++ [{?MD_DELETED, DeletedVal}]
+                         ++ meta_of_binary(MetaRestBin);
+                 false ->  
+                     MDList0 ++ meta_of_binary(MetaRestBin)
+             end,
     MD = dict:from_list(MDList),
     {#r_content{metadata=MD, value=ValBin}, Rest}.
 
+
 meta_of_binary(MetaBin) ->
     meta_of_binary(MetaBin, []).
+meta_of_binary(<<>>, Acc) ->
+    Acc;
 meta_of_binary(<<KeyLen:32/integer, KeyBin:KeyLen/binary, ValueLen:32/integer, ValueBin:ValueLen/binary, Rest/binary>>, ResultList) ->
     Key = binary_to_term(KeyBin),
     Value = binary_to_term(ValueBin),
@@ -172,7 +183,7 @@ bin_content(#r_content{metadata=Meta, value=Val}) ->
     {{VTag, Deleted, {Mega,Secs,Micro}},RestBin} = dict:fold(Folder, {{undefined, <<0>>, undefined}, <<>>}, Meta),
      VTagBin = list_to_binary(VTag),
      LastModBin = <<Mega:32/integer, Secs:32/integer, Micro:32/integer>>,
-     MetaBin = <<LastModBin/binary, VTagBin/binary, Deleted:1/binary-unit:8, RestBin/binary>>,
+     MetaBin = <<LastModBin/binary, VTagBin:16/binary, Deleted:1/binary-unit:8, RestBin/binary>>,
      MetaLen = byte_size(MetaBin),
      <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary>>.
     
