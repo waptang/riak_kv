@@ -58,11 +58,16 @@
 -define(MAX_KEY_SIZE, 65536).
 
 %% Riak Objects in binary format (on disk)
+%%
+%% <<53:
+
+
+
 -type r_object_bin() :: binary().
 -type r_content_bin() :: binary().
 %% -type rfc1123_date() :: string(). % LastMod Date
 
--define(MAGIC, <<53>>).  %% Magic number, as opposed to 131 for Erlang term-to-binary magic
+-define(MAGIC, 53).      %% Magic number, as opposed to 131 for Erlang term-to-binary magic
                          %% Shanley's(11) + Joe's(42)
 
 -export([new/3, new/4, ensure_robject/1, ancestors/1, reconcile/2, equal/2]).
@@ -91,13 +96,12 @@ binary_to_robj(_Bin) ->
 %% @doc Contruct new binary riak objects.
 -spec new_v1(vclock:vclock(), [#r_content{}]) -> r_object_bin().
 new_v1(Vclock, Siblings) ->
-    Ver = <<1>>,
+    Ver = <<1:8/integer>>,
     VclockBin = term_to_binary(Vclock),
     VclockLen = byte_size(VclockBin),
     SibCount = length(Siblings),
     SibsBin = bin_contents(Siblings),
-    Magic = ?MAGIC,
-    <<Magic/binary, Ver, VclockLen:32/integer, VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
+    <<?MAGIC:8/integer, Ver, VclockLen:32/integer, VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
 
 -spec bin_content(#r_content{}) -> r_content_bin().
 bin_content(#r_content{metadata=Meta, value=Val}) ->
