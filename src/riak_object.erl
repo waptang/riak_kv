@@ -73,6 +73,7 @@
 -type r_content_bin() :: binary().
 %% -type rfc1123_date() :: string(). % LastMod Date
 
+-define(LASTMOD_LEN, 29). %% static length of rfc1123_date() type. Hard-coded in Erlang.
 -define(V1_VERS, 1).
 -define(MAGIC, 53).      %% Magic number, as opposed to 131 for Erlang term-to-binary magic
                          %% Shanley's(11) + Joe's(42)
@@ -87,7 +88,7 @@
 -export([index_specs/1, diff_index_specs/2]).
 -export([set_contents/2, set_vclock/2]). %% INTERNAL, only for riak_*
 -export([new_v1/2]). %% TODO: remove when referenced.
--export([robj_to_binary/1, binary_to_robj/1, binary_to_robj/2]).
+-export([robj_to_binary/1, binary_to_robj/3, binary_to_robj/2]).
 
 %% @doc Convert riak object to binary form
 -spec robj_to_binary(#r_object{}) -> r_object_bin().
@@ -96,25 +97,49 @@ robj_to_binary(#r_object{contents=Contents, vclock=VClock}) ->
 
 %% @doc Convert binary object to riak object, convenience function
 -spec binary_to_robj({bucket(),key()}, binary()) -> #r_object{}.
-binary_to_robj({_B,_K},Term) ->
-    binary_to_robj(_B,_K,Term).
+binary_to_robj({B,K},Term) ->
+    binary_to_robj(B,K,Term).
 
 %% @doc Convert binary object to riak object
--spec binary_to_robj(bucket(),key(),binary()) -> #r_object{}.
+-spec binary_to_robj(bucket(),key(),binary()) -> #r_object{} | {error, atom()}.
 binary_to_robj(_B,_K,<<131, _Rest/binary>>=ObjTerm) ->
     binary_to_term(ObjTerm);
-binary_to_robj(_B,_K,<<?MAGIC:8/integer, 1:8/integer, _Rest/binary>>=_ObjBin) ->
-    %% %% Version 1 of binary riak object
-    %% case Rest of
-    %%     <<VclockLen:32/integer, VclockBin/binary, SibCount:32/integer, SibsBin/binary>>,
-    %%     new(B,K,Value)
-    %%                 Contents = [#r_content{metadata=MD, value=V}],
-    %%                 #r_object{bucket=B,key=K,updatemetadata=MD,
-    %%                           contents=Contents,vclock=vclock:fresh()}
-    throw(error_unknown_version).
+binary_to_robj(B,K,<<?MAGIC:8/integer, 1:8/integer, Rest/binary>>=_ObjBin) ->
+    %% Version 1 of binary riak object
+    case Rest of
+        <<VclockLen:32/integer, VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> ->
+            Vclock = binary_to_term(VclockBin),
+            Contents = sibs_of_binary(SibCount, SibsBin),
+            #r_object{bucket=B,key=K,contents=Contents,vclock=Vclock};
+        _Other ->
+            {error, bad_object_format}
+    end;
+binary_to_robj(_B, _K, <<?MAGIC, _Ver, _Rest/binary>>=_ObjBin) ->
+    {error, unknown_version}.
+        
+sibs_of_binary(Count,SibsBin) ->
+    sibs_of_binary(Count, SibsBin, []).
+    
+sibs_of_binary(0, <<>>, Result) -> lists:reverse(Result);
+sibs_of_binary(0, _NotEmpty, _Result) ->
+    {error, corrupt_contents};
+sibs_of_binary(Count, SibsBin, Result) ->
+    {Sib, SibsRest} = sib_of_binary(SibsBin),
+    sibs_of_binary(Count-1, SibsRest, [Sib | Result]).
 
-binary_to_robj(<<?MAGIC, _Ver, _Rest/binary>>=_ObjBin) ->
-    throw(error_unknown_version).
+sib_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary, Rest/binary>>) ->
+    <<LastMod:?LASTMOD_LEN, VTag:128, Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
+    DeletedVal = case Deleted of <<1>> -> true; _False -> false end,
+    MDList = [{?MD_LASTMOD, LastMod}, {?MD_VTAG, VTag}, {?MD_DELETED, DeletedVal}] ++ meta_of_binary(MetaRestBin),
+    MD = dict:from_list(MDList),
+    {#r_content{metadata=MD, value=ValBin}, Rest}.
+
+meta_of_binary(MetaBin) ->
+    meta_of_binary(MetaBin, []).
+meta_of_binary(<<KeyLen:32/integer, KeyBin:KeyLen/binary, ValueLen:32/integer, ValueBin:ValueLen/binary, Rest/binary>>, ResultList) ->
+    Key = binary_to_term(KeyBin),
+    Value = binary_to_term(ValueBin),
+    meta_of_binary(Rest, [{Key, Value} | ResultList]).
 
 %% @doc Contruct new binary riak objects.
 -spec new_v1(vclock:vclock(), [#r_content{}]) -> r_object_bin().
@@ -140,13 +165,12 @@ bin_content(#r_content{metadata=Meta, value=Val}) ->
                              ValueLen = byte_size(ValueBin),
                              KeyBin = term_to_binary(Key),
                              KeyLen = byte_size(KeyBin),
-                             Binary = <<KeyLen:32/integer, KeyBin/binary, ValueLen:32/integer, ValueBin/binary>>,
-                             <<RestBin, Binary>>
+                             MetaBin = <<KeyLen:32/integer, KeyBin/binary, ValueLen:32/integer, ValueBin/binary>>,
+                             <<RestBin, MetaBin>>
                      end
              end,
     {{VTag, Deleted, LastMod}, RestBin} = dict:fold(Folder, {{undefined, <<0>>, undefined}, <<>>}, Meta),
-    LastModLen = byte_size(LastMod),
-    MetaBin = <<LastMod:LastModLen, VTag:128, Deleted:1/binary-unit:8, RestBin/binary>>,
+    MetaBin = <<LastMod:?LASTMOD_LEN, VTag:128, Deleted:1/binary-unit:8, RestBin/binary>>,
     MetaLen = byte_size(MetaBin),
     <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary>>.
     
@@ -632,11 +656,6 @@ syntactic_merge(CurrentObject, NewObject) ->
     end.
 
 -ifdef(TEST).
-
-robj_to_bin_test() ->
-    O = object_test(),
-    B = riak_object:robj_to_binary(O),
-    ?assertEqual(B, E).
 
 object_test() ->
     B = <<"buckets_are_binaries">>,
