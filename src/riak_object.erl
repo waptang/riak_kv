@@ -128,7 +128,7 @@ sibs_of_binary(Count, SibsBin, Result) ->
     sibs_of_binary(Count-1, SibsRest, [Sib | Result]).
 
 sib_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary, Rest/binary>>) ->
-    <<LMMega:32/integer, LMSecs:32/integer, LMMicro:32/integer, VTag:16/binary, Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
+    <<LMMega:32/integer, LMSecs:32/integer, LMMicro:32/integer, VTagLen:8/integer, VTag:VTagLen/binary, Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
     DeletedVal = case Deleted of <<1>> -> true; _False -> false end,
     MDList0 = [{?MD_LASTMOD, {LMMega, LMSecs, LMMicro}}, {?MD_VTAG, binary_to_list(VTag)}],
     MDList = case DeletedVal of 
@@ -140,7 +140,7 @@ sib_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, Met
                      MDList0 ++ meta_of_binary(MetaRestBin)
              end,
     MD = dict:from_list(MDList),
-    {#r_content{metadata=MD, value=ValBin}, Rest}.
+    {#r_content{metadata=MD, value=binary_to_term(ValBin)}, Rest}.
 
 
 meta_of_binary(MetaBin) ->
@@ -181,11 +181,12 @@ bin_content(#r_content{metadata=Meta, value=Val}) ->
                      end
              end,
     {{VTag, Deleted, {Mega,Secs,Micro}},RestBin} = dict:fold(Folder, {{undefined, <<0>>, undefined}, <<>>}, Meta),
-     VTagBin = list_to_binary(VTag),
-     LastModBin = <<Mega:32/integer, Secs:32/integer, Micro:32/integer>>,
-     MetaBin = <<LastModBin/binary, VTagBin:16/binary, Deleted:1/binary-unit:8, RestBin/binary>>,
-     MetaLen = byte_size(MetaBin),
-     <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary>>.
+    VTagLen = length(VTag),
+    VTagBin = list_to_binary(VTag),
+    LastModBin = <<Mega:32/integer, Secs:32/integer, Micro:32/integer>>,
+    MetaBin = <<LastModBin/binary, VTagLen:8/integer, VTagBin:VTagLen/binary, Deleted:1/binary-unit:8, RestBin/binary>>,
+    MetaLen = byte_size(MetaBin),
+    <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary>>.
     
 bin_contents(Contents) ->
     F = fun(Content, Acc) ->
