@@ -128,9 +128,9 @@ sibs_of_binary(Count, SibsBin, Result) ->
     sibs_of_binary(Count-1, SibsRest, [Sib | Result]).
 
 sib_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary, Rest/binary>>) ->
-    <<LastMod:?LASTMOD_LEN, VTag:128, Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
+    <<LMMega:32/integer, LMSecs:32/integer, LMMicro:32/integer, VTag:128, Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
     DeletedVal = case Deleted of <<1>> -> true; _False -> false end,
-    MDList = [{?MD_LASTMOD, LastMod}, {?MD_VTAG, VTag}, {?MD_DELETED, DeletedVal}] ++ meta_of_binary(MetaRestBin),
+    MDList = [{?MD_LASTMOD, {LMMega, LMSecs, LMMicro}}, {?MD_VTAG, VTag}, {?MD_DELETED, DeletedVal}] ++ meta_of_binary(MetaRestBin),
     MD = dict:from_list(MDList),
     {#r_content{metadata=MD, value=ValBin}, Rest}.
 
@@ -154,7 +154,7 @@ new_v1(Vclock, Siblings) ->
 bin_content(#r_content{metadata=Meta, value=Val}) ->
     ValBin = term_to_binary(Val),
     ValLen = byte_size(ValBin),
-    Folder = fun(Key, Value, {{Vt,Del,Lm},RestBin}) ->
+    Folder = fun(Key, Value, {{Vt,Del,Lm}=Elems,RestBin}) ->
                      case Key of
                          ?MD_VTAG -> {{Value, Del, Lm}, RestBin};
                          ?MD_LASTMOD -> {{Vt, Del, Value}, RestBin};
@@ -166,17 +166,19 @@ bin_content(#r_content{metadata=Meta, value=Val}) ->
                              KeyBin = term_to_binary(Key),
                              KeyLen = byte_size(KeyBin),
                              MetaBin = <<KeyLen:32/integer, KeyBin/binary, ValueLen:32/integer, ValueBin/binary>>,
-                             <<RestBin/binary, MetaBin/binary>>
+                             {Elems, <<RestBin/binary, MetaBin/binary>>}
                      end
              end,
-    {{VTag, Deleted, LastMod}, RestBin} = dict:fold(Folder, {{undefined, <<0>>, undefined}, <<>>}, Meta),
-    MetaBin = <<LastMod:?LASTMOD_LEN, VTag:128, Deleted:1/binary-unit:8, RestBin/binary>>,
-    MetaLen = byte_size(MetaBin),
-    <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary>>.
+    {{VTag, Deleted, {Mega,Secs,Micro}},RestBin} = dict:fold(Folder, {{undefined, <<0>>, undefined}, <<>>}, Meta),
+     VTagBin = list_to_binary(VTag),
+     LastModBin = <<Mega:32/integer, Secs:32/integer, Micro:32/integer>>,
+     MetaBin = <<LastModBin/binary, VTagBin/binary, Deleted:1/binary-unit:8, RestBin/binary>>,
+     MetaLen = byte_size(MetaBin),
+     <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary>>.
     
 bin_contents(Contents) ->
     F = fun(Content, Acc) ->
-                <<Acc, (bin_content(Content))>>
+                <<Acc/binary, (bin_content(Content))/binary>>
         end,
     lists:foldl(F, <<>>, Contents).
 
