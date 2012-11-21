@@ -57,12 +57,6 @@
 
 -define(MAX_KEY_SIZE, 65536).
 
-%% Riak Objects in binary format (on disk)
-%%
-%% <<53:
-
-
-
 -type r_object_bin() :: binary().
 -type r_content_bin() :: binary().
 %% -type rfc1123_date() :: string(). % LastMod Date
@@ -80,18 +74,34 @@
 -export([index_specs/1, diff_index_specs/2]).
 -export([set_contents/2, set_vclock/2]). %% INTERNAL, only for riak_*
 -export([new_v1/2]). %% TODO: remove when referenced.
--export([robj_to_binary/1, binary_to_robj/1]).
+-export([robj_to_binary/1, binary_to_robj/1, binary_to_robj/2]).
 
 %% @doc Convert riak object to binary form
 -spec robj_to_binary(#r_object{}) -> r_object_bin().
-robj_to_binary(_Robject) ->
-    throw ({error, unimplemented}).
+robj_to_binary(#r_object{contents=Contents, vclock=VClock}) ->
+    new_v1(VClock, Contents).
+
+%% @doc Convert binary object to riak object, convenience function
+-spec binary_to_robj({bucket(),key()}, binary()) -> #r_object{}.
+binary_to_robj({_B,_K},Term) ->
+    binary_to_robj(_B,_K,Term).
 
 %% @doc Convert binary object to riak object
--spec binary_to_robj(binary()) -> #r_object{}.
-binary_to_robj(_Bin) ->
-    %% pattern match on binary
-    throw ({error, unimplemented}).
+-spec binary_to_robj(bucket(),key(),binary()) -> #r_object{}.
+binary_to_robj(_B,_K,<<131, _Rest/binary>>=ObjTerm) ->
+    binary_to_term(ObjTerm);
+binary_to_robj(_B,_K,<<?MAGIC:8/integer, 1:8/integer, _Rest/binary>>=_ObjBin) ->
+    %% %% Version 1 of binary riak object
+    %% case Rest of
+    %%     <<VclockLen:32/integer, VclockBin/binary, SibCount:32/integer, SibsBin/binary>>,
+    %%     new(B,K,Value)
+    %%                 Contents = [#r_content{metadata=MD, value=V}],
+    %%                 #r_object{bucket=B,key=K,updatemetadata=MD,
+    %%                           contents=Contents,vclock=vclock:fresh()}
+    throw(error_unknown_version).
+
+binary_to_robj(<<?MAGIC, _Ver, _Rest/binary>>=_ObjBin) ->
+    throw(error_unknown_version).
 
 %% @doc Contruct new binary riak objects.
 -spec new_v1(vclock:vclock(), [#r_content{}]) -> r_object_bin().
@@ -127,7 +137,6 @@ bin_content(#r_content{metadata=Meta, value=Val}) ->
     MetaBin = <<LastMod:LastModLen, VTag:128, Deleted:1/binary-unit:8, RestBin/binary>>,
     MetaLen = byte_size(MetaBin),
     <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary>>.
-
     
 bin_contents(Contents) ->
     F = fun(Content, Acc) ->
@@ -611,6 +620,11 @@ syntactic_merge(CurrentObject, NewObject) ->
     end.
 
 -ifdef(TEST).
+
+robj_to_bin_test() ->
+    O = object_test(),
+    B = riak_object:robj_to_binary(O),
+    ?assertEqual(B, E).
 
 object_test() ->
     B = <<"buckets_are_binaries">>,
