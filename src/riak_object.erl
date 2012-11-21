@@ -166,7 +166,7 @@ bin_content(#r_content{metadata=Meta, value=Val}) ->
                              KeyBin = term_to_binary(Key),
                              KeyLen = byte_size(KeyBin),
                              MetaBin = <<KeyLen:32/integer, KeyBin/binary, ValueLen:32/integer, ValueBin/binary>>,
-                             <<RestBin, MetaBin>>
+                             <<RestBin/binary, MetaBin/binary>>
                      end
              end,
     {{VTag, Deleted, LastMod}, RestBin} = dict:fold(Folder, {{undefined, <<0>>, undefined}, <<>>}, Meta),
