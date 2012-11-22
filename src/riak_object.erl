@@ -77,6 +77,7 @@
 -define(V1_VERS, 1).
 -define(MAGIC, 53).      %% Magic number, as opposed to 131 for Erlang term-to-binary magic
                          %% Shanley's(11) + Joe's(42)
+-define(EMPTY_VTAG_BIN, <<"e">>).
 
 -export([new/3, new/4, ensure_robject/1, ancestors/1, reconcile/2, equal/2]).
 -export([increment_vclock/2, increment_vclock/3]).
@@ -88,17 +89,12 @@
 -export([index_specs/1, diff_index_specs/2]).
 -export([set_contents/2, set_vclock/2]). %% INTERNAL, only for riak_*
 -export([new_v1/2]). %% TODO: remove when referenced.
--export([robj_to_binary/1, binary_to_robj/3, binary_to_robj/2]).
+-export([robj_to_binary/1, binary_to_robj/3]).
 
 %% @doc Convert riak object to binary form
 -spec robj_to_binary(#r_object{}) -> r_object_bin().
 robj_to_binary(#r_object{contents=Contents, vclock=VClock}) ->
     new_v1(VClock, Contents).
-
-%% @doc Convert binary object to riak object, convenience function
--spec binary_to_robj({bucket(),key()}, binary()) -> #r_object{}.
-binary_to_robj({B,K},Term) ->
-    binary_to_robj(B,K,Term).
 
 %% @doc Convert binary object to riak object
 -spec binary_to_robj(bucket(),key(),binary()) -> #r_object{} | {error, atom()}.
@@ -130,14 +126,21 @@ sibs_of_binary(Count, SibsBin, Result) ->
 sib_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary, Rest/binary>>) ->
     <<LMMega:32/integer, LMSecs:32/integer, LMMicro:32/integer, VTagLen:8/integer, VTag:VTagLen/binary, Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
     DeletedVal = case Deleted of <<1>> -> true; _False -> false end,
-    MDList0 = [{?MD_LASTMOD, {LMMega, LMSecs, LMMicro}}, {?MD_VTAG, binary_to_list(VTag)}],
+    MDList0 = case {LMMega, LMSecs, LMMicro} of                  
+                  {0, 0, 0} -> []; %% original meta had no last mod
+                  LM -> [{?MD_LASTMOD, LM}]
+              end,
+    MDList1 = case VTag of 
+                  ?EMPTY_VTAG_BIN -> MDList0;
+                  _ -> MDList0 ++ [{?MD_VTAG, binary_to_list(VTag)}]
+              end,
     MDList = case DeletedVal of 
                  true -> 
-                     MDList0 
+                     MDList1 
                          ++ [{?MD_DELETED, DeletedVal}]
                          ++ meta_of_binary(MetaRestBin);
                  false ->  
-                     MDList0 ++ meta_of_binary(MetaRestBin)
+                     MDList1 ++ meta_of_binary(MetaRestBin)
              end,
     MD = dict:from_list(MDList),
     {#r_content{metadata=MD, value=binary_to_term(ValBin)}, Rest}.
@@ -180,10 +183,16 @@ bin_content(#r_content{metadata=Meta, value=Val}) ->
                              {Elems, <<RestBin/binary, MetaBin/binary>>}
                      end
              end,
-    {{VTag, Deleted, {Mega,Secs,Micro}},RestBin} = dict:fold(Folder, {{undefined, <<0>>, undefined}, <<>>}, Meta),
-    VTagLen = length(VTag),
-    VTagBin = list_to_binary(VTag),
-    LastModBin = <<Mega:32/integer, Secs:32/integer, Micro:32/integer>>,
+    {{VTagVal, Deleted, LastModVal}, RestBin} = dict:fold(Folder, {{undefined, <<0>>, undefined}, <<>>}, Meta),
+    VTagBin = case VTagVal of 
+                  undefined ->  ?EMPTY_VTAG_BIN;
+                  _ -> list_to_binary(VTagVal)
+              end,
+    VTagLen = byte_size(VTagBin),                                              
+    LastModBin = case LastModVal of 
+                     undefined -> <<0:32/integer, 0:32/integer, 0:32/integer>>;
+                     {Mega,Secs,Micro} -> <<Mega:32/integer, Secs:32/integer, Micro:32/integer>>
+                 end,
     MetaBin = <<LastModBin/binary, VTagLen:8/integer, VTagBin:VTagLen/binary, Deleted:1/binary-unit:8, RestBin/binary>>,
     MetaLen = byte_size(MetaBin),
     <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary>>.
