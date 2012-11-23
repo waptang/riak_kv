@@ -61,31 +61,22 @@ descendant(O1, O2) ->
     vclock:descends(V1, V2).
 
 handle_cast({write, {ReqId, Pid}, {Bucket, Key}, NewRO, _}, State=#state{client=C}) ->
-    io:format("dawg1~n"),
     {Valid, Changed, RO2} = check_valid_and_merge(C, Bucket, Key, NewRO),
-    io:format("dawg2~n"),
     case {Valid, Changed} of
         {true, _} ->
-            io:format("dawg3~n"),
             {Result, _, State2} = maybe_write_back(true, NewRO, State),
             case Result of
                 true ->
                     client_reply(ReqId, Pid, ok);
-                X ->
-                    io:format("X: ~p~n", [X]),
+                _ ->
                     client_reply(ReqId, Pid, {error, unavailable})
             end,
-            io:format("dawg4~n"),
             {noreply, State2};
         {false, true} ->
-            io:format("dawg5~n"),
             {_, _, State2} = maybe_write_back(true, RO2, State),
-            io:format("dawg6~n"),
             client_reply(ReqId, Pid, {error, value_changed}),
             {noreply, State2};
-        XX ->
-            io:format("dawg7~n"),
-            io:format("XX: ~p~n", [XX]),
+        _ ->
             client_reply(ReqId, Pid, {error, value_changed}),
             {noreply, State}
     end;
@@ -93,21 +84,16 @@ handle_cast({write, {ReqId, Pid}, {Bucket, Key}, NewRO, _}, State=#state{client=
 handle_cast({read, {ReqId, Pid}, {Bucket, Key}, _}, State=#state{client=C}) ->
     case C:get(Bucket, Key, [direct,{pr,quorum},{r,quorum},primary]) of
         {ok, RO} ->
-            io:format("RO: ~p~n", [RO]),
             {Changed, RO2} = maybe_merge(RO),
             Old = old_epoch(RO2, State),
-            io:format("C/O: ~p/~p~n", [Changed, Old]),
             case maybe_write_back(Changed or Old, RO2, State) of
                 {false, _, State2} ->
-                    io:format("false: ~p~n", [RO2]),
                     client_reply(ReqId, Pid, {ok, RO2}),
                     {noreply, State2};
                 {true, RO3, State2} ->
-                    io:format("true: ~p~n", [RO3]),
                     client_reply(ReqId, Pid, {ok, RO3}),
                     {noreply, State2};
                 {failed, _, State2} ->
-                    io:format("failed~n"),
                     client_reply(ReqId, Pid, {error, unavailable}),
                     {noreply, State2}
             end;
@@ -119,8 +105,8 @@ handle_cast({read, {ReqId, Pid}, {Bucket, Key}, _}, State=#state{client=C}) ->
             {noreply, State}
     end;
 
-handle_cast(Msg, State) ->
-    io:format("~p/~p/~p: ~p~n", [node(), State#state.id, self(), Msg]),
+handle_cast(_Msg, State) ->
+    %% io:format("~p/~p/~p: ~p~n", [node(), State#state.id, self(), Msg]),
     {noreply, State}.
 
 handle_info(_Info, State) ->
@@ -155,6 +141,7 @@ merge(1, RO) ->
     {false, RO};
 merge(_, RO) ->
     [First|Rest] = riak_object:get_contents(RO),
+    %% TODO: epoch + vclock are better resolution approach, no need to have seq-id
     Pick = lists:foldl(fun({Meta,Val}, {MetaX, ValX}) ->
                                Tag1 = dict:fetch(<<"rxid">>, Meta),
                                Tag2 = dict:fetch(<<"rxid">>, MetaX),
@@ -171,7 +158,8 @@ merge(_, RO) ->
 
 make_tag(Epoch, Seq) ->
     %% term_to_binary({Epoch, Seq}).
-    list_to_binary(io_lib:format("~b_~b", [Epoch, Seq])).
+    %% list_to_binary(io_lib:format("~b_~b", [Epoch, Seq])).
+    <<Epoch:64/integer, Seq:64/integer>>.
     
 tag(MD, State=#state{epoch=Epoch, seq=Seq}) ->
     Tag = make_tag(Epoch, Seq),
