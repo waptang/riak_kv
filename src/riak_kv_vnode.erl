@@ -88,8 +88,7 @@
                 key_buf_size :: pos_integer(),
                 async_folding :: boolean(),
                 in_handoff = false :: boolean(),
-                hashtrees :: pid(),
-                status :: primary | fallback
+                hashtrees :: pid()
                }).
 
 -type index_op() :: add | remove.
@@ -119,11 +118,10 @@ maybe_create_hashtrees(false, State) ->
     State;
 maybe_create_hashtrees(true, State=#state{idx=Index}) ->
     %% Only maintain a hashtree if a primary vnode
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    case riak_core_ring:index_owner(Ring, Index) == node() of
-        false ->
+    case ownership_status(Index) of
+        fallback ->
             State;
-        true ->
+        primary ->
             RP = riak_kv_util:responsible_preflists(Index),
             case riak_kv_index_hashtree:start(Index, RP, self()) of
                 {ok, Trees} ->
@@ -201,7 +199,7 @@ local_get(Index, BKey) ->
     Sender = {raw, Ref, self()},
     get({Index,node()}, BKey, ReqId, Sender),
     receive
-        {Ref, {r, Result, Index, ReqId}} ->
+        {Ref, {r, Result, Index, ReqId, _Status}} ->
             Result;
         {Ref, Reply} ->
             {error, Reply}
@@ -316,15 +314,6 @@ init([Index]) ->
     DeleteMode = app_helper:get_env(riak_kv, delete_mode, 3000),
     AsyncFolding = app_helper:get_env(riak_kv, async_folds, true) == true,
 
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    Node = node(),
-    Status = case riak_core_ring:index_owner(Ring, Index) of
-                 Node ->
-                     primary;
-                 _ ->
-                     fallback
-             end,
-
     case catch Mod:start(Index, Configuration) of
         {ok, ModState} ->
             %% Get the backend capabilities
@@ -337,8 +326,7 @@ init([Index]) ->
                            bucket_buf_size=BucketBufSize,
                            index_buf_size=IndexBufSize,
                            key_buf_size=KeyBufSize,
-                           mrjobs=dict:new(),
-                           status=Status},
+                           mrjobs=dict:new()},
             case AsyncFolding of
                 true ->
                     %% Create worker pool initialization tuple
@@ -947,10 +935,11 @@ put_merge(true, false, CurObj, UpdObj, VId, StartTime) ->
 
 %% @private
 do_get(_Sender, BKey, ReqID,
-       State=#state{idx=Idx,mod=Mod,modstate=ModState, status=Status}) ->
+       State=#state{idx=Idx,mod=Mod,modstate=ModState}) ->
     StartTS = os:timestamp(),
     Retval = do_get_term(BKey, Mod, ModState),
     update_vnode_stats(vnode_get, Idx, StartTS),
+    Status = reply_ownership_status(Idx),
     {reply, {r, Retval, Idx, ReqID, Status}, State}.
 
 %% @private
@@ -1333,6 +1322,37 @@ default_object_nval() ->
 object_info({Bucket, _Key}=BKey) ->
     Hash = riak_core_util:chash_key(BKey),
     {Bucket, Hash}.
+
+
+%% @private
+ownership_status(Index) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    ownership_status(Ring, Index).
+
+ownership_status(Ring, Index) ->
+    case riak_core_ring:index_owner(Ring, Index) == node() of
+        false ->
+            fallback;
+        true ->
+            primary
+    end.
+
+reply_ownership_status(Index) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    Node = node(),
+    case ownership_status(Ring, Index) of
+        primary ->
+            primary;
+        fallback ->
+            case riak_core_ring:next_owner(Ring, Index) of
+                {Node, _, _} ->
+                    primary;
+                {_, Node, _} ->
+                    primary;
+                _ -> fallback
+            end
+    end.
+
 
 
 -ifdef(TEST).
