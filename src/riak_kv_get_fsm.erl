@@ -187,19 +187,20 @@ validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
     case validate_quorum(R, R0, N, PR, PR0, NumPrimaries, NumVnodes) of
         ok ->
             BQ0 = get_option(basic_quorum, Options, default),
+            FailR = erlang:max(PR, R),
             FailThreshold =
                 case riak_kv_util:expand_value(basic_quorum, BQ0, BucketProps) of
                     true ->
                         erlang:min((N div 2)+1, % basic quorum, or
-                                   (N-R+1)); % cannot ever get R 'ok' replies
+                                   (N-FailR+1)); % cannot ever get R 'ok' replies
                     _ElseFalse ->
-                        N - R + 1 % cannot ever get R 'ok' replies
+                        N - FailR + 1 % cannot ever get R 'ok' replies
                 end,
             AllowMult = proplists:get_value(allow_mult,BucketProps),
             NFOk0 = get_option(notfound_ok, Options, default),
             NotFoundOk = riak_kv_util:expand_value(notfound_ok, NFOk0, BucketProps),
             DeletedVClock = get_option(deletedvclock, Options, false),
-            GetCore = riak_kv_get_core:init(N, R, FailThreshold,
+            GetCore = riak_kv_get_core:init(N, R, PR, FailThreshold,
                                             NotFoundOk, AllowMult,
                                             DeletedVClock),
             new_state_timeout(execute, StateData#state{get_core = GetCore,
@@ -221,7 +222,7 @@ validate_quorum(_R, _ROpt, _N, PR, PROpt, _NumPrimaries, _NumVnodes) when PR =:=
 validate_quorum(_R, _ROpt,  N, PR, _PROpt, _NumPrimaries, _NumVnodes) when PR > N ->
     {error, {n_val_violation, N}};
 validate_quorum(_R, _ROpt, _N, PR, _PROpt, NumPrimaries, _NumVnodes) when PR > NumPrimaries ->
-    {error, {pr_val_unsatisfied, PR, NumPrimaries}};
+    {error, {pr_val_unsatisfiable, PR, NumPrimaries}};
 validate_quorum(R, _ROpt, _N, _PR, _PROpt, _NumPrimaries, NumVnodes) when R > NumVnodes ->
     {error, {insufficient_vnodes, NumVnodes, need, R}};
 validate_quorum(_R, _ROpt, _N, _PR, _PROpt, _NumPrimaries, _NumVnodes) ->
@@ -251,11 +252,11 @@ preflist_for_tracing(Preflist) ->
      end || {Idx, Nd} <- lists:sublist(Preflist, 4)].
 
 %% @private
-waiting_vnode_r({r, VnodeResult, Idx, _ReqId}, StateData = #state{get_core = GetCore}) ->
+waiting_vnode_r({r, VnodeResult, Idx, _ReqId, Status}, StateData = #state{get_core = GetCore}) ->
     ShortCode = riak_kv_get_core:result_shortcode(VnodeResult),
     IdxStr = integer_to_list(Idx),
     ?DTRACE(?C_GET_FSM_WAITING_R, [ShortCode], ["waiting_vnode_r", IdxStr]),
-    UpdGetCore = riak_kv_get_core:add_result(Idx, VnodeResult, GetCore),
+    UpdGetCore = riak_kv_get_core:add_result(Idx, VnodeResult, Status,  GetCore),
     case riak_kv_get_core:enough(UpdGetCore) of
         true ->
             {Reply, UpdGetCore2} = riak_kv_get_core:response(UpdGetCore),
@@ -273,13 +274,13 @@ waiting_vnode_r(request_timeout, StateData) ->
     finalize(S2).
 
 %% @private
-waiting_read_repair({r, VnodeResult, Idx, _ReqId},
+waiting_read_repair({r, VnodeResult, Idx, _ReqId, Status},
                     StateData = #state{get_core = GetCore}) ->
     ShortCode = riak_kv_get_core:result_shortcode(VnodeResult),
     IdxStr = integer_to_list(Idx),
     ?DTRACE(?C_GET_FSM_WAITING_RR, [ShortCode],
             ["waiting_read_repair", IdxStr]),
-    UpdGetCore = riak_kv_get_core:add_result(Idx, VnodeResult, GetCore),
+    UpdGetCore = riak_kv_get_core:add_result(Idx, VnodeResult, Status, GetCore),
     maybe_finalize(StateData#state{get_core = UpdGetCore});
 waiting_read_repair(request_timeout, StateData) ->
     ?DTRACE(?C_GET_FSM_WAITING_RR_TIMEOUT, [-2],

@@ -88,7 +88,9 @@
                 key_buf_size :: pos_integer(),
                 async_folding :: boolean(),
                 in_handoff = false :: boolean(),
-                hashtrees :: pid() }).
+                hashtrees :: pid(),
+                status :: primary | fallback
+               }).
 
 -type index_op() :: add | remove.
 -type index_value() :: integer() | binary().
@@ -313,6 +315,16 @@ init([Index]) ->
     {ok, VId} = get_vnodeid(Index),
     DeleteMode = app_helper:get_env(riak_kv, delete_mode, 3000),
     AsyncFolding = app_helper:get_env(riak_kv, async_folds, true) == true,
+
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    Node = node(),
+    Status = case riak_core_ring:index_owner(Ring, Index) of
+                 Node ->
+                     primary;
+                 _ ->
+                     fallback
+             end,
+
     case catch Mod:start(Index, Configuration) of
         {ok, ModState} ->
             %% Get the backend capabilities
@@ -325,7 +337,8 @@ init([Index]) ->
                            bucket_buf_size=BucketBufSize,
                            index_buf_size=IndexBufSize,
                            key_buf_size=KeyBufSize,
-                           mrjobs=dict:new()},
+                           mrjobs=dict:new(),
+                           status=Status},
             case AsyncFolding of
                 true ->
                     %% Create worker pool initialization tuple
@@ -934,11 +947,11 @@ put_merge(true, false, CurObj, UpdObj, VId, StartTime) ->
 
 %% @private
 do_get(_Sender, BKey, ReqID,
-       State=#state{idx=Idx,mod=Mod,modstate=ModState}) ->
+       State=#state{idx=Idx,mod=Mod,modstate=ModState, status=Status}) ->
     StartTS = os:timestamp(),
     Retval = do_get_term(BKey, Mod, ModState),
     update_vnode_stats(vnode_get, Idx, StartTS),
-    {reply, {r, Retval, Idx, ReqID}, State}.
+    {reply, {r, Retval, Idx, ReqID, Status}, State}.
 
 %% @private
 do_get_term(BKey, Mod, ModState) ->

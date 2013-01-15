@@ -20,7 +20,7 @@
 %%
 %% -------------------------------------------------------------------
 -module(riak_kv_get_core).
--export([init/6, add_result/3, result_shortcode/1, enough/1, response/1,
+-export([init/7, add_result/4, result_shortcode/1, enough/1, response/1,
          has_all_results/1, final_action/1, info/1]).
 -export_type([getcore/0, result/0, reply/0, final_action/0]).
 
@@ -38,6 +38,7 @@
 
 -record(getcore, {n :: pos_integer(),
                   r :: pos_integer(),
+                  pr :: pos_integer(),
                   fail_threshold :: pos_integer(),
                   notfound_ok :: boolean(),
                   allow_mult :: boolean(),
@@ -46,6 +47,7 @@
                   merged :: {notfound | tombstone | ok,
                              riak_object:riak_object() | undefined},
                   num_ok = 0 :: non_neg_integer(),
+                  num_pok = 0 :: non_neg_integer(),
                   num_notfound = 0 :: non_neg_integer(),
                   num_fail = 0 :: non_neg_integer()}).
 -opaque getcore() :: #getcore{}.
@@ -55,29 +57,36 @@
 %% ====================================================================
 
 %% Initialize a get and return an opaque get core context
--spec init(pos_integer(), pos_integer(), pos_integer(), boolean(), boolean(),
+-spec init(pos_integer(), pos_integer(), pos_integer(), pos_integer(), boolean(), boolean(),
            boolean()) -> getcore().
-init(N, R, FailThreshold, NotFoundOk, AllowMult, DeletedVClock) ->
+init(N, R, PR, FailThreshold, NotFoundOk, AllowMult, DeletedVClock) ->
     #getcore{n = N,
              r = R,
+             pr = PR,
              fail_threshold = FailThreshold,
              notfound_ok = NotFoundOk,
              allow_mult = AllowMult,
              deletedvclock = DeletedVClock}.
 
 %% Add a result for a vnode index
--spec add_result(non_neg_integer(), result(), getcore()) -> getcore().
-add_result(Idx, Result, GetCore = #getcore{results = Results}) ->
+-spec add_result(non_neg_integer(), result(), primary | fallback, getcore()) -> getcore().
+add_result(Idx, Result, Status, GetCore = #getcore{results = Results}) ->
     UpdResults = [{Idx, Result} | Results],
+    POK = case Status of
+              primary -> 1;
+              _ -> 0
+          end,
     case Result of
         {ok, _RObj} ->
             GetCore#getcore{results = UpdResults, merged = undefined,
-                            num_ok = GetCore#getcore.num_ok + 1};
+                            num_ok = GetCore#getcore.num_ok + 1,
+                            num_pok = GetCore#getcore.num_pok + POK};
         {error, notfound} ->
             case GetCore#getcore.notfound_ok of
                 true ->
                     GetCore#getcore{results = UpdResults, merged = undefined,
-                                    num_ok = GetCore#getcore.num_ok + 1};
+                                    num_ok = GetCore#getcore.num_ok + 1,
+                                    num_pok = GetCore#getcore.num_pok + POK};
                 _ ->
                     GetCore#getcore{results = UpdResults, merged = undefined,
                                     num_notfound = GetCore#getcore.num_notfound + 1}
@@ -93,14 +102,18 @@ result_shortcode(_)                 -> -1.
 
 %% Check if enough results have been added to respond
 -spec enough(getcore()) -> boolean().
-enough(#getcore{r = R, num_ok = NumOk,
+enough(#getcore{r = R, pr = PR, num_ok = NumOk,
+                num_pok = NumPOK,
                 num_notfound = NumNotFound,
                 num_fail = NumFail,
-                fail_threshold = FailThreshold}) ->
+                fail_threshold = FailThreshold,
+                n = N}) ->
     if
-        NumOk >= R ->
+        NumOk >= R andalso NumPOK >= PR ->
             true;
         NumNotFound + NumFail >= FailThreshold ->
+            true;
+        NumOk + NumNotFound + NumFail >= N ->
             true;
         true ->
             false
@@ -108,11 +121,13 @@ enough(#getcore{r = R, num_ok = NumOk,
 
 %% Get success/fail response once enough results received
 -spec response(getcore()) -> {reply(), getcore()}.
-response(GetCore = #getcore{r = R, num_ok = NumOk, num_notfound = NumNotFound,
+response(GetCore = #getcore{r = R, num_ok = NumOk,
+                            pr = PR, num_pok = NumPOK,
+                            num_notfound = NumNotFound,
                             results = Results, allow_mult = AllowMult,
                             deletedvclock = DeletedVClock}) ->
     {ObjState, MObj} = Merged = merge(Results, AllowMult),
-    Reply = case NumOk >= R of
+    Reply = case NumOk >= R andalso NumPOK >= PR of
                 true ->
                     case ObjState of
                         ok ->
@@ -128,7 +143,7 @@ response(GetCore = #getcore{r = R, num_ok = NumOk, num_notfound = NumNotFound,
                     Fails = [F || F = {_Idx, {error, Reason}} <- Results,
                                   Reason /= notfound],
                     fail_reply(R, NumOk, NumOk - DelObjs,
-                               NumNotFound + DelObjs, Fails)
+                               NumNotFound + DelObjs, Fails, PR, NumPOK)
             end,
     {Reply, GetCore#getcore{merged = Merged}}.
 
@@ -222,7 +237,12 @@ merge(Replies, AllowMult) ->
             end
     end.
 
-fail_reply(_R, _NumR, 0, NumNotFound, []) when NumNotFound > 0 ->
+fail_reply(_R, _NumR, 0, NumNotFound, [], _PR, _NumPOK) when NumNotFound > 0 ->
     {error, notfound};
-fail_reply(R, NumR, _NumNotDeleted, _NumNotFound, _Fails) ->
+fail_reply(R, NumR, _NumNotDeleted, _NumNotFound, _Fails, PR, NumPR) when
+      PR > 0, NumPR < PR, NumR >= R ->
+    {error, {pr_val_unsatisfied, PR,  NumPR}};
+fail_reply(R, NumR, _NumNotDeleted, _NumNotFound, _Fails, _PR, _NumPOK) ->
     {error, {r_val_unsatisfied, R,  NumR}}.
+
+
