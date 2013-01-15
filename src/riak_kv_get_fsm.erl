@@ -67,6 +67,7 @@
                 startnow :: {non_neg_integer(), non_neg_integer(), non_neg_integer()},
                 get_usecs :: non_neg_integer(),
                 tracked_bucket=false :: boolean(), %% is per bucket stats enabled for this bucket
+                idx_type :: orddict:orddict(), %% mapping of index to partition type (primary | fallback)
                 timing = [] :: [{atom(), erlang:timestamp()}],
                 calculated_timings :: {ResponseUSecs::non_neg_integer(),
                                        [{StateName::atom(), TimeUSecs::non_neg_integer()}]} | undefined
@@ -163,11 +164,16 @@ prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key}}) ->
     StatTracked = proplists:get_value(stat_tracked, BucketProps, false),
     UpNodes = riak_core_node_watcher:nodes(riak_kv),
     Preflist2 = riak_core_apl:get_apl_ann(DocIdx, N, Ring, UpNodes),
+    IdxType = lists:foldl(fun({{Part, _Node}, Type}, Acc) ->
+                                  orddict:store(Part, Type, Acc) end,
+                          orddict:new(),
+                          Preflist2),
     new_state_timeout(validate, StateData#state{starttime=riak_core_util:moment(),
                                           n = N,
                                           bucket_props=BucketProps,
                                           preflist2 = Preflist2,
-                                          tracked_bucket = StatTracked}).
+                                          tracked_bucket = StatTracked,
+                                          idx_type = IdxType}).
 
 %% @private
 validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
@@ -222,7 +228,7 @@ validate_quorum(_R, _ROpt, _N, PR, PROpt, _NumPrimaries, _NumVnodes) when PR =:=
 validate_quorum(_R, _ROpt,  N, PR, _PROpt, _NumPrimaries, _NumVnodes) when PR > N ->
     {error, {n_val_violation, N}};
 validate_quorum(_R, _ROpt, _N, PR, _PROpt, NumPrimaries, _NumVnodes) when PR > NumPrimaries ->
-    {error, {pr_val_unsatisfiable, PR, NumPrimaries}};
+    {error, {pr_val_unsatisfied, PR, NumPrimaries}};
 validate_quorum(R, _ROpt, _N, _PR, _PROpt, _NumPrimaries, NumVnodes) when R > NumVnodes ->
     {error, {insufficient_vnodes, NumVnodes, need, R}};
 validate_quorum(_R, _ROpt, _N, _PR, _PROpt, _NumPrimaries, _NumVnodes) ->
@@ -252,11 +258,13 @@ preflist_for_tracing(Preflist) ->
      end || {Idx, Nd} <- lists:sublist(Preflist, 4)].
 
 %% @private
-waiting_vnode_r({r, VnodeResult, Idx, _ReqId, Status}, StateData = #state{get_core = GetCore}) ->
+waiting_vnode_r({r, VnodeResult, Idx, _ReqId}, StateData = #state{get_core = GetCore,
+                                                                  idx_type= IdxType}) ->
     ShortCode = riak_kv_get_core:result_shortcode(VnodeResult),
+    ResponseStatus = get_response_owner_status(Idx, IdxType),
     IdxStr = integer_to_list(Idx),
     ?DTRACE(?C_GET_FSM_WAITING_R, [ShortCode], ["waiting_vnode_r", IdxStr]),
-    UpdGetCore = riak_kv_get_core:add_result(Idx, VnodeResult, Status,  GetCore),
+    UpdGetCore = riak_kv_get_core:add_result(Idx, VnodeResult, ResponseStatus, GetCore),
     case riak_kv_get_core:enough(UpdGetCore) of
         true ->
             {Reply, UpdGetCore2} = riak_kv_get_core:response(UpdGetCore),
@@ -273,14 +281,22 @@ waiting_vnode_r(request_timeout, StateData) ->
     update_stats(timeout, S2),
     finalize(S2).
 
+%% If the Idx is not in the IdxType
+%% the world should end
+get_response_owner_status(Idx, IdxType) ->
+    {ok, Status} = orddict:find(Idx, IdxType),
+    Status.
+
 %% @private
-waiting_read_repair({r, VnodeResult, Idx, _ReqId, Status},
-                    StateData = #state{get_core = GetCore}) ->
+waiting_read_repair({r, VnodeResult, Idx, _ReqId},
+                    StateData = #state{get_core = GetCore,
+                                       idx_type = IdxType}) ->
+    ResponseStatus = get_response_owner_status(Idx, IdxType),
     ShortCode = riak_kv_get_core:result_shortcode(VnodeResult),
     IdxStr = integer_to_list(Idx),
     ?DTRACE(?C_GET_FSM_WAITING_RR, [ShortCode],
             ["waiting_read_repair", IdxStr]),
-    UpdGetCore = riak_kv_get_core:add_result(Idx, VnodeResult, Status, GetCore),
+    UpdGetCore = riak_kv_get_core:add_result(Idx, VnodeResult, ResponseStatus, GetCore),
     maybe_finalize(StateData#state{get_core = UpdGetCore});
 waiting_read_repair(request_timeout, StateData) ->
     ?DTRACE(?C_GET_FSM_WAITING_RR_TIMEOUT, [-2],
