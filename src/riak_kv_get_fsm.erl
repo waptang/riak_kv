@@ -181,7 +181,7 @@ validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
               end,
     R0 = get_option(r, Options, ?DEFAULT_R),
     PR0 = get_option(pr, Options, ?DEFAULT_PR),
-    R = riak_kv_util:expand_rw_value(r, R0, BucketProps, N),
+    R1 = riak_kv_util:expand_rw_value(r, R0, BucketProps, N),
     PR = riak_kv_util:expand_rw_value(pr, PR0, BucketProps, N),
     NumVnodes = length(PL2),
     NumPrimaries = length([x || {_,primary} <- PL2]),
@@ -189,18 +189,17 @@ validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
                                   orddict:store(Part, Type, Acc) end,
                           orddict:new(),
                           PL2),
-    io:format(user, "IDXtype ~p~n", [IdxType]),
-    case validate_quorum(R, R0, N, PR, PR0, NumPrimaries, NumVnodes) of
+    case validate_quorum(R1, R0, N, PR, PR0, NumPrimaries, NumVnodes) of
         ok ->
             BQ0 = get_option(basic_quorum, Options, default),
-            FailR = erlang:max(PR, R),
+            R = erlang:max(R1, PR), %% R is promoted to PR if PR > R
             FailThreshold =
                 case riak_kv_util:expand_value(basic_quorum, BQ0, BucketProps) of
                     true ->
                         erlang:min((N div 2)+1, % basic quorum, or
-                                   (N-FailR+1)); % cannot ever get R 'ok' replies
+                                   (N-R+1)); % cannot ever get R 'ok' replies
                     _ElseFalse ->
-                        N - FailR + 1 % cannot ever get R 'ok' replies
+                        N - R + 1 % cannot ever get R 'ok' replies
                 end,
             AllowMult = proplists:get_value(allow_mult,BucketProps),
             NFOk0 = get_option(notfound_ok, Options, default),
