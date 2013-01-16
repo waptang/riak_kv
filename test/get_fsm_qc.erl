@@ -22,6 +22,7 @@
                 pr,
                 real_pr,
                 num_primaries,
+                preflist,
                 history,
                 objects,
                 deleted,
@@ -84,10 +85,22 @@ test() ->
     test(100).
 
 test(N) ->
-    quickcheck(numtests(N, prop_basic_get())).
+    fsm_eqc_util:start_mock_servers(),
+    fsm_eqc_util:start_fake_rng(?MODULE),
+    try quickcheck(numtests(N, prop_basic_get()))
+    after
+        fsm_eqc_util:cleanup_mock_servers(),
+        exit(whereis(?MODULE), kill)
+    end.
 
 check() ->
-    check(prop_basic_get(), current_counterexample()).
+    fsm_eqc_util:start_mock_servers(),
+    fsm_eqc_util:start_fake_rng(?MODULE),
+    try check(prop_basic_get(), current_counterexample())
+    after
+        fsm_eqc_util:cleanup_mock_servers(),
+        exit(whereis(?MODULE), kill)
+    end.
 
 %%====================================================================
 %% Generators
@@ -237,7 +250,7 @@ prop_basic_get() ->
         DeletedVClock = proplists:get_value(deletedvclock, Options, false),
         NumPrimaries = length([xx || {_,primary} <- PL2]),
         State = expect(#state{n = N, r = R, real_r = RealR, pr = PR, real_pr = RealPR,
-                              history = History,
+                              history = History, preflist=PL2,
                               objects = Objects, deleted = Deleted, options = Options,
                               notfound_is_ok = NotFoundIsOk, basic_quorum = BasicQuorum,
                               num_primaries = NumPrimaries, deletedvclock = DeletedVClock}),
@@ -249,8 +262,15 @@ prop_basic_get() ->
                             0;
                         {error, {pr_val_violation, _}} ->
                             0;
-                        {error, {pr_val_unsatisfied, _, _}} ->
-                            0;
+                        {error, {pr_val_unsatisfied, _, Y}} ->
+                            case Y >= NumPrimaries of
+                                true ->
+                                    %% if this preflist can never satisfy PR,
+                                    %% the put fsm will bail early
+                                    0;
+                                false ->
+                                    length([xx || {_, Resp} <- VGetResps, Resp /= timeout])
+                            end;
                         _ ->
                             length([xx || {_, Resp} <- VGetResps, Resp /= timeout])
                     end,
@@ -417,6 +437,7 @@ check_repair(Objects, RepairH, H, RRAbort) ->
     Heads  = merge_heads([ Lineage || {_, {ok, Lineage}} <- H ]),
     RepairObject  = (catch build_merged_object(Heads, Objects)),
     Expected =expected_repairs(H,RRAbort),
+    io:format(user, "Expected repairs ~p, ~p  -> ~p~n", [H, RRAbort, Expected]),
     RepairObjects = [ Obj || {_Idx, ?KV_PUT_REQ{object=Obj}} <- RepairH ],
     conjunction(
         [{puts, equals(lists:sort(Expected), lists:sort(Actual))},
@@ -473,8 +494,8 @@ expect(State = #state{real_pr = RealPR, num_primaries = NumPrimaries}) when Real
     State#state{exp_result = {error, {pr_val_unsatisfied, RealPR, NumPrimaries}}};
 expect(State = #state{history = History, objects = Objects,
                       deletedvclock = DeletedVClock, deleted = _Deleted}) ->
-    H = [ V || {_, V} <- History ],
-    State1 = expect(H, State, 0, 0 , 0, 0, []),
+    io:format(user, "History ~p~n", [History]),
+    State1 = expect(History, State, 0, 0, 0, 0, 0, []),
     case State1#state.exp_result of
         {ok, Heads} ->
             Object = build_merged_object(Heads, Objects),
@@ -491,16 +512,30 @@ expect(State = #state{history = History, objects = Objects,
 
 %% decide on error message - if only got notfound messages, return notfound
 %% otherwise let caller know R value was not met.
-notfound_or_error(NotFound, 0, 0, _Oks, _R) when NotFound > 0 ->
+notfound_or_error(NotFound, 0, 0, _Oks, _R, _PR, _PROks) when NotFound > 0 ->
     notfound;
-notfound_or_error(_NotFound, _NumNotDeleted, _Err, Oks, R) ->
-    {r_val_unsatisfied, R, Oks}.
+notfound_or_error(_NotFound, _NumNotDeleted, _Err, Oks, R, PR, PROks) ->
+    case PR >= R of
+        true ->
+            {pr_val_unsatisfied, PR, PROks};
+        false ->
+            {r_val_unsatisfied, R, Oks}
+    end.
 
-expect(H, State = #state{n = N, real_r = R, deleted = Deleted, notfound_is_ok = NotFoundIsOk,
-                         basic_quorum = BasicQuorum},
-       NotFounds, Oks, DelOks, Errs, Heads) ->
+expect(H, State = #state{n = N, real_r = R, real_pr = PR, deleted = Deleted, notfound_is_ok = NotFoundIsOk,
+                         basic_quorum = BasicQuorum, preflist=Preflist},
+       NotFounds, Oks, PROks, DelOks, Errs, Heads) ->
+    FailR = erlang:max(PR, R),
+    FailThreshold =
+    case BasicQuorum of
+        true ->
+            erlang:min((N div 2)+1, % basic quorum, or
+                (N-FailR+1)); % cannot ever get R 'ok' replies
+        _ElseFalse ->
+            N - FailR + 1 % cannot ever get R 'ok' replies
+    end,
     Pending = N - (NotFounds + Oks + Errs),
-    if  Oks >= R ->                     % we made quorum
+    if  Oks >= R andalso PROks >= PR -> % we made quorum
             ExpResult = case Heads of
                             [] ->
                                 notfound;
@@ -512,26 +547,45 @@ expect(H, State = #state{n = N, real_r = R, deleted = Deleted, notfound_is_ok = 
         Pending + Oks < R ->            % no way we'll make quorum
             %% Adjust counts to make deleted objects count towards notfound.
             State#state{exp_result = notfound_or_error(NotFounds + DelOks, Oks - DelOks,
-                                                       Errs, Oks, R),
+                                                       Errs, Oks, R, PR, PROks),
                         num_oks = Oks, del_oks = DelOks, num_errs = Errs};
+        (PROks < PR andalso NotFounds + Errs >= FailThreshold) ->
+            case NotFounds > 0 andalso NotFoundIsOk == false of
+                true ->
+                    % Apparently one notfound is enough to prevent the user
+                    % from getting a result
+                    State#state{exp_result = notfound, num_oks = Oks, num_errs = Errs};
+                false ->
+                    State#state{exp_result = {pr_val_unsatisfied, PR, PROks},
+                        num_oks = Oks, num_errs = Errs}
+            end;
         true ->
             case H of
                 [] ->
                     State#state{exp_result = timeout, num_oks = Oks, num_errs = Errs};
-                [timeout|Rest] ->
-                    expect(Rest, State, NotFounds, Oks, DelOks, Errs, Heads);
-                [notfound|Rest] ->
+                [{_Idx, timeout}|Rest] ->
+                    expect(Rest, State, NotFounds, Oks, PROks, DelOks, Errs, Heads);
+                [{_Idx, notfound}|Rest] ->
                     case NotFoundIsOk of
                         true ->
-                            expect(Rest, State, NotFounds, Oks + 1, DelOks, Errs, Heads);
+                            expect(Rest, State, NotFounds, Oks + 1, PROks, DelOks, Errs, Heads);
                         false ->
-                            expect(Rest, State, NotFounds + 1, Oks, DelOks, Errs, Heads)
+                            expect(Rest, State, NotFounds + 1, Oks, PROks, DelOks, Errs, Heads)
                     end;
-                [error|Rest] ->
-                    expect(Rest, State, NotFounds, Oks, DelOks, Errs + 1, Heads);
-                [{ok,Lineage}|Rest] ->
+                [{_Idx, error}|Rest] ->
+                    expect(Rest, State, NotFounds, Oks, PROks, DelOks, Errs + 1, Heads);
+                [{Idx, {ok,Lineage}}|Rest] ->
+                    PRInc = case lists:keyfind(Idx, 1, [{Index, Primacy} ||
+                                {{Index, _Pid}, Primacy} <- Preflist]) of
+                        {Idx, primary} ->
+                            io:format(user, "incrementing PR ~p~n", [PROks+1]),
+                            1;
+                        _ ->
+                            0
+                    end,
+
                     IncDelOks = length([xx || {Lineage1, deleted} <- Deleted, Lineage1 == Lineage]),
-                    expect(Rest, State, NotFounds, Oks + 1, DelOks + IncDelOks, Errs,
+                    expect(Rest, State, NotFounds, Oks + 1, PROks + PRInc, DelOks + IncDelOks, Errs,
                            merge_heads(Lineage, Heads))
             end
     end.

@@ -164,16 +164,11 @@ prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key}}) ->
     StatTracked = proplists:get_value(stat_tracked, BucketProps, false),
     UpNodes = riak_core_node_watcher:nodes(riak_kv),
     Preflist2 = riak_core_apl:get_apl_ann(DocIdx, N, Ring, UpNodes),
-    IdxType = lists:foldl(fun({{Part, _Node}, Type}, Acc) ->
-                                  orddict:store(Part, Type, Acc) end,
-                          orddict:new(),
-                          Preflist2),
     new_state_timeout(validate, StateData#state{starttime=riak_core_util:moment(),
                                           n = N,
                                           bucket_props=BucketProps,
                                           preflist2 = Preflist2,
-                                          tracked_bucket = StatTracked,
-                                          idx_type = IdxType}).
+                                          tracked_bucket = StatTracked}).
 
 %% @private
 validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
@@ -190,6 +185,11 @@ validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
     PR = riak_kv_util:expand_rw_value(pr, PR0, BucketProps, N),
     NumVnodes = length(PL2),
     NumPrimaries = length([x || {_,primary} <- PL2]),
+    IdxType = lists:foldl(fun({{Part, _Node}, Type}, Acc) ->
+                                  orddict:store(Part, Type, Acc) end,
+                          orddict:new(),
+                          PL2),
+    io:format(user, "IDXtype ~p~n", [IdxType]),
     case validate_quorum(R, R0, N, PR, PR0, NumPrimaries, NumVnodes) of
         ok ->
             BQ0 = get_option(basic_quorum, Options, default),
@@ -211,7 +211,8 @@ validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
                                             DeletedVClock),
             new_state_timeout(execute, StateData#state{get_core = GetCore,
                                                        timeout = Timeout,
-                                                       req_id = ReqId});
+                                                       req_id = ReqId,
+                                                       idx_type = IdxType});
         Error ->
             StateData2 = client_reply(Error, StateData),
             {stop, normal, StateData2}

@@ -78,6 +78,7 @@ add_result(Idx, Result, Status, GetCore = #getcore{results = Results}) ->
           end,
     case Result of
         {ok, _RObj} ->
+            io:format(user, "got result~n", []),
             GetCore#getcore{results = UpdResults, merged = undefined,
                             num_ok = GetCore#getcore.num_ok + 1,
                             num_pok = GetCore#getcore.num_pok + POK};
@@ -110,10 +111,13 @@ enough(#getcore{r = R, pr = PR, num_ok = NumOk,
                 n = N}) ->
     if
         NumOk >= R andalso NumPOK >= PR ->
+            io:format(user, "got enough, pr and r are satisfied~n", []),
             true;
         NumNotFound + NumFail >= FailThreshold ->
+            io:format(user, "Exceeded fail threshold of ~p~n", [FailThreshold]),
             true;
         NumOk + NumNotFound + NumFail >= N ->
+            io:format(user, "Got more >= N replies ~p~n", [N]),
             true;
         true ->
             false
@@ -142,6 +146,8 @@ response(GetCore = #getcore{r = R, num_ok = NumOk,
                                             riak_kv_util:is_x_deleted(RObj)]),
                     Fails = [F || F = {_Idx, {error, Reason}} <- Results,
                                   Reason /= notfound],
+                    io:format(user, "fail reply ~p~n", [[R, NumOk, NumOk - DelObjs,
+                                NumNotFound + DelObjs, Fails, PR, NumPOK]]),
                     fail_reply(R, NumOk, NumOk - DelObjs,
                                NumNotFound + DelObjs, Fails, PR, NumPOK)
             end,
@@ -239,10 +245,13 @@ merge(Replies, AllowMult) ->
 
 fail_reply(_R, _NumR, 0, NumNotFound, [], _PR, _NumPOK) when NumNotFound > 0 ->
     {error, notfound};
-fail_reply(R, NumR, _NumNotDeleted, _NumNotFound, _Fails, PR, NumPR) when
-      PR > 0, NumPR < PR, NumR >= R ->
+fail_reply(R, _NumR, _NumNotDeleted, _NumNotFound, _Fails, PR, NumPR) when
+      PR > 0, NumPR < PR, PR >= R -> % , NumR >= R ->
     {error, {pr_val_unsatisfied, PR,  NumPR}};
 fail_reply(R, NumR, _NumNotDeleted, _NumNotFound, _Fails, _PR, _NumPOK) ->
+    io:format(user, "R ~p, NumR ~p, NumNotDeleted ~p, NumNotFound ~p, Fails"
+        " ~p, PR ~p, NumPR ~p~n", [R, NumR, _NumNotDeleted, _NumNotFound,
+            _Fails, _PR, _NumPOK]),
     {error, {r_val_unsatisfied, R,  NumR}}.
 
 
