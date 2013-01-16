@@ -130,28 +130,23 @@ enough(#putcore{ w = W, num_w = NumW, num_fail = NumFail, w_fail_threshold = WFa
 enough(_) ->
     false.
 
-
-
-
 %% Get success/fail response once enough results received
 -spec response(putcore()) -> {reply(), putcore()}.
-response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW,
-                            num_fail = NumFail,
-                            w_fail_threshold = WFailThreshold,
-                            dw_fail_threshold = DWFailThreshold}) ->
-    if
-        NumW >= W andalso NumDW >= DW ->
-            maybe_return_body(PutCore);
-        
-        NumW >= W andalso NumFail >= DWFailThreshold ->
-            {{error, too_many_fails}, PutCore};
-        
-       NumW < W andalso NumFail >= WFailThreshold ->
-            {{error, too_many_fails}, PutCore};
-        
-        true ->
-            {{error, {w_val_unsatisfied, NumW, NumDW, W, DW}}, PutCore}
-    end.
+%% Perfect world - all quora met
+response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = PW, num_pw = NumPW}) when
+      NumW >= W, NumDW >= DW, NumPW >= PW ->
+    maybe_return_body(PutCore);
+%% Everything is ok, except we didn't meet PW
+response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = PW, num_pw = NumPW}) when
+      NumW >= W, NumDW >= DW, NumPW < PW ->
+    {{error, pw_val_unsatisfied, PW, NumPW}, PutCore};
+%% Didn't make DW
+response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW}) when
+      NumW >= W, NumDW < DW ->
+    {{error, dw_val_unsatisfied, DW, NumDW}, PutCore};
+%% Didn't even make quorom
+response(PutCore = #putcore{w = W, num_w = NumW}) ->
+    {{error, w_val_unsatisfied, W, NumW}, PutCore}.
 
 %% Get final value - if returnbody did not need the result it allows delaying
 %% running reconcile until after the client reply is sent.

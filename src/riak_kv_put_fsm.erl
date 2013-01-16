@@ -319,7 +319,7 @@ validate(timeout, StateData0 = #state{from = {raw, ReqId, _Pid},
                                           precommit = Precommit,
                                           postcommit = Postcommit,
                                           req_id = ReqId,
-                                          timeout = Timeout}
+                                          timeout = Timeout},
             Options = flatten_options(proplists:unfold(Options0 ++ ?DEFAULT_OPTS), []),
             StateData2 = handle_options(Options, StateData1),
             StateData3 = apply_updates(StateData2),
@@ -384,8 +384,7 @@ execute_local(StateData=#state{robj=RObj, req_id = ReqId,
 waiting_local_vnode(request_timeout, StateData) ->
     ?DTRACE(?C_PUT_FSM_WAITING_LOCAL_VNODE, [-1], []),
     process_reply({error,timeout}, StateData);
-waiting_local_vnode(Result, StateData = #state{putcore = PutCore, idx_type = IdxType}) ->
-    ResponseStatus = get_response_owner_status(Idx, IdxType),
+waiting_local_vnode(Result, StateData = #state{putcore = PutCore}) ->
     UpdPutCore1 = riak_kv_put_core:add_result(Result, PutCore),
     case Result of
         {fail, Idx, _ReqId} ->
