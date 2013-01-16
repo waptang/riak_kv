@@ -376,8 +376,10 @@ prop_basic_put() ->
                                    {ok, RetObj, Info0} ->
                                        {{ok, RetObj}, Info0};
                                    {error, Reason, Info0} ->
-                                       {{error, Reason}, Info0}
-                               end,                                                 
+                                       {{error, Reason}, Info0};
+                                   {error, Reason, Info0, Info1} ->
+                                       {{error, Reason, Info0, Info1}, undefined}
+                               end,
 
         ?WHENFAIL(
            begin
@@ -717,10 +719,10 @@ enough_replies({_H, N, W, DW, NumW, NumDW, NumFail, _RObj, _Precommit}) ->
             {true, ok};
 
         NumW < W andalso NumFail > MaxWFails ->
-            {true, {error, too_many_fails}};
+            {true, {error, w_val_unsatisfied, W, NumW}};
 
         NumW >= W andalso NumFail > MaxDWFails ->
-            {true, {error, too_many_fails}};
+            {true, {error, dw_val_unsatisfied, DW, NumDW}};
 
         true ->
             false
