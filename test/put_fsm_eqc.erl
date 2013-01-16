@@ -143,15 +143,24 @@ cleanup(started) ->
 prepare() ->
     fsm_eqc_util:start_mock_servers(),
     start_javascript().
-    
+
 test() ->
     test(100).
 
 test(N) ->
-    quickcheck(numtests(N, prop_basic_put())).
+    State = setup(),
+    try quickcheck(numtests(N, prop_basic_put()))
+    after
+        cleanup(State)
+    end.
 
 check() ->
-    check(prop_basic_put(), current_counterexample()).
+    State = setup(),
+    try check(prop_basic_put(), current_counterexample())
+    after
+        cleanup(State)
+    end.
+
 
 %%====================================================================
 %% Generators
