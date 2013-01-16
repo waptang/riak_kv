@@ -20,7 +20,7 @@
 %%
 %% -------------------------------------------------------------------
 -module(riak_kv_put_core).
--export([init/7, add_result/2, enough/1, response/1, 
+-export([init/10, add_result/2, enough/1, response/1, 
          final/1, result_shortcode/1, result_idx/1]).
 -export_type([putcore/0, result/0, reply/0]).
 
@@ -39,7 +39,9 @@
 -record(putcore, {n :: pos_integer(),
                   w :: non_neg_integer(),
                   dw :: non_neg_integer(),
+                  pw :: non_neg_integer(),
                   w_fail_threshold :: pos_integer(),
+                  pw_fail_threshold :: pos_integer(),
                   dw_fail_threshold :: pos_integer(),
                   returnbody :: boolean(),
                   allowmult :: boolean(),
@@ -47,7 +49,10 @@
                   final_obj :: undefined | riak_object:riak_object(),
                   num_w = 0 :: non_neg_integer(),
                   num_dw = 0 :: non_neg_integer(),
-                  num_fail = 0 :: non_neg_integer()}).
+                  num_pw = 0 :: non_neg_integer(),
+                  num_fail = 0 :: non_neg_integer(),
+                  idx_type :: orddict:orddict() %% mapping of idx -> primary | fallback
+                 }).
 -opaque putcore() :: #putcore{}.
 
 %% ====================================================================
@@ -56,28 +61,47 @@
 
 %% Initialize a put and return an opaque put core context
 -spec init(pos_integer(), non_neg_integer(), non_neg_integer(), 
-           pos_integer(), pos_integer(), boolean(), boolean()) -> putcore().
-init(N, W, DW, WFailThreshold, DWFailThreshold, AllowMult, ReturnBody) ->
-    #putcore{n = N, w = W, dw = DW,
+           non_neg_integer(), pos_integer(), pos_integer(),
+           pos_integer(), boolean(), boolean(),
+           orddict:orddict()) -> putcore().
+init(N, W, PW, DW, WFailThreshold, PWFailThreshold,
+     DWFailThreshold, AllowMult, ReturnBody, IdxType) ->
+    #putcore{n = N, w = W, pw = PW, dw = DW,
              w_fail_threshold = WFailThreshold,
+             pw_fail_threshold = PWFailThreshold,
              dw_fail_threshold = DWFailThreshold,
              allowmult = AllowMult,
-             returnbody = ReturnBody}.
-   
+             returnbody = ReturnBody,
+             idx_type = IdxType}.
+
+%% @private If the Idx is not in the IdxType
+%% the world should end
+is_primary_response(Idx, IdxType) ->
+    {ok, Status} = orddict:find(Idx, IdxType),
+    Status == primary.
+
+num_pw(PutCore = #putcore{num_pw=NumPW, idx_type=IdxType}, Idx) ->
+    case is_primary_response(Idx, IdxType) of
+        true ->
+            PutCore#putcore{num_pw=NumPW+1};
+        false ->
+            PutCore
+    end.
+
 %% Add a result from the vnode
 -spec add_result(vput_result(), putcore()) -> putcore().
 add_result({w, Idx, _ReqId}, PutCore = #putcore{results = Results,
                                                 num_w = NumW}) ->
-    PutCore#putcore{results = [{Idx, w} | Results],
-                    num_w = NumW + 1};
+    num_pw(PutCore#putcore{results = [{Idx, w} | Results],
+                    num_w = NumW + 1}, Idx);
 add_result({dw, Idx, _ReqId}, PutCore = #putcore{results = Results,
                                                  num_dw = NumDW}) ->
-    PutCore#putcore{results = [{Idx, {dw, undefined}} | Results], 
-                    num_dw = NumDW + 1};
+    num_pw(PutCore#putcore{results = [{Idx, {dw, undefined}} | Results],
+                    num_dw = NumDW + 1}, Idx);
 add_result({dw, Idx, ResObj, _ReqId}, PutCore = #putcore{results = Results,
                                                          num_dw = NumDW}) ->
-    PutCore#putcore{results = [{Idx, {dw, ResObj}} | Results],
-                    num_dw = NumDW + 1};
+    num_pw(PutCore#putcore{results = [{Idx, {dw, ResObj}} | Results],
+                    num_dw = NumDW + 1}, Idx);
 add_result({fail, Idx, _ReqId}, PutCore = #putcore{results = Results,
                                                    num_fail = NumFail}) ->
     PutCore#putcore{results = [{Idx, {error, undefined}} | Results],
@@ -88,12 +112,14 @@ add_result(_Other, PutCore = #putcore{num_fail = NumFail}) ->
 
 %% Check if enough results have been added to respond 
 -spec enough(putcore()) -> boolean().
-enough(#putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, 
+enough(#putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW,
+                pw = PW, num_pw = NumPW, pw_fail_threshold = PWFailThreshold,
                 num_fail = NumFail, w_fail_threshold = WFailThreshold,
                 dw_fail_threshold = DWFailThreshold}) ->
-    (NumW >= W andalso NumDW >= DW) orelse
-        (NumW >= W andalso NumFail >= DWFailThreshold) orelse
-        (NumW < W andalso NumFail >= WFailThreshold).
+    (NumW >= W andalso NumDW >= DW andalso NumPW >= PW) orelse
+    (NumW >= W andalso NumFail >= DWFailThreshold) orelse
+    (NumW >= W andalso NumFail >= PWFailThreshold) orelse
+    (NumW < W andalso NumFail >= WFailThreshold).
 
 %% Get success/fail response once enough results received
 -spec response(putcore()) -> {reply(), putcore()}.

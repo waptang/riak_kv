@@ -164,6 +164,7 @@ prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key}}) ->
     StatTracked = proplists:get_value(stat_tracked, BucketProps, false),
     UpNodes = riak_core_node_watcher:nodes(riak_kv),
     Preflist2 = riak_core_apl:get_apl_ann(DocIdx, N, Ring, UpNodes),
+
     new_state_timeout(validate, StateData#state{starttime=riak_core_util:moment(),
                                           n = N,
                                           bucket_props=BucketProps,
@@ -189,6 +190,7 @@ validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
                                   orddict:store(Part, Type, Acc) end,
                           orddict:new(),
                           PL2),
+
     case validate_quorum(R1, R0, N, PR, PR0, NumPrimaries, NumVnodes) of
         ok ->
             BQ0 = get_option(basic_quorum, Options, default),
@@ -281,7 +283,7 @@ waiting_vnode_r(request_timeout, StateData) ->
     update_stats(timeout, S2),
     finalize(S2).
 
-%% If the Idx is not in the IdxType
+%% @private If the Idx is not in the IdxType
 %% the world should end
 get_response_owner_status(Idx, IdxType) ->
     {ok, Status} = orddict:find(Idx, IdxType),
