@@ -130,8 +130,7 @@ enough(#putcore{ w = W, num_w = NumW, num_fail = NumFail, w_fail_threshold = WFa
 enough(_) ->
     false.
 
-
-
+response
 
 %% Get success/fail response once enough results received
 -spec response(putcore()) -> {reply(), putcore()}.

@@ -311,7 +311,11 @@ validate(timeout, StateData0 = #state{from = {raw, ReqId, _Pid},
                 if Disable -> [];
                    true -> get_hooks(postcommit, BucketProps)
                 end,
-            StateData1 = StateData0#state{n=N, w=W, pw=PW, dw=DW, allowmult=AllowMult,
+            StateData1 = StateData0#state{n=N,
+                                          %% Promote W to the largest of PW and DW
+                                          %% As that as the strictest / most restrictive quorum
+                                          w=erlang:max(W, erlang:max(DW, PW)),
+                                          pw=PW, dw=DW, allowmult=AllowMult,
                                           precommit = Precommit,
                                           postcommit = Postcommit,
                                           req_id = ReqId,
