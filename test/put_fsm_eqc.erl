@@ -296,7 +296,7 @@ prop_basic_put() ->
         N = length(VPutResp),
         {PW, RealPW} = pw_val(N, 1000000, PWSeed),
         {W, RealW0} = w_dw_val(N, 1000000, WSeed),
-        {DW, RealDW}  = w_dw_val(N, RealPW, DWSeed),
+        {DW, RealDW}  = w_dw_val(N, RealW0, DWSeed),
 
         
         %% {Q, _Ring, NodeStatus} = fsm_eqc_util:mock_ring(N + NQdiff, NodeStatus0), 
