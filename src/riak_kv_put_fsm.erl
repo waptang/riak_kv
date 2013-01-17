@@ -387,6 +387,7 @@ waiting_local_vnode(request_timeout, StateData) ->
     ?DTRACE(?C_PUT_FSM_WAITING_LOCAL_VNODE, [-1], []),
     process_reply({error,timeout}, StateData);
 waiting_local_vnode(Result, StateData = #state{putcore = PutCore}) ->
+    io:format("Adding result ~p~n", [Result]),
     UpdPutCore1 = riak_kv_put_core:add_result(Result, PutCore),
     case Result of
         {fail, Idx, _ReqId} ->
@@ -447,11 +448,14 @@ waiting_remote_vnode(Result, StateData = #state{putcore = PutCore}) ->
     IdxStr = integer_to_list(riak_kv_put_core:result_idx(Result)),
     ?DTRACE(?C_PUT_FSM_WAITING_REMOTE_VNODE, [ShortCode], [IdxStr]),
     UpdPutCore1 = riak_kv_put_core:add_result(Result, PutCore),
+    io:format("adding result ~p~n", [Result]),
     case riak_kv_put_core:enough(UpdPutCore1) of
         true ->
+            io:format("got enough~n"),
             {Reply, UpdPutCore2} = riak_kv_put_core:response(UpdPutCore1),
             process_reply(Reply, StateData#state{putcore = UpdPutCore2});
         false ->
+            io:format("not enough~n"),
             {next_state, waiting_remote_vnode, StateData#state{putcore = UpdPutCore1}}
     end.
 

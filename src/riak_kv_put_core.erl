@@ -128,7 +128,15 @@ enough(#putcore{ w = W, num_w = NumW, num_fail = NumFail, dw_fail_threshold = DW
 enough(#putcore{ w = W, num_w = NumW, num_fail = NumFail, w_fail_threshold = WFailThreshold}) when
       NumW < W, NumFail >= WFailThreshold ->
     true;
-enough(_) ->
+%% We've received all DW responses but can't satisfy PW
+enough(#putcore{n = N, num_dw = NumDW, num_fail = NumFail, pw = PW, num_pw = NumPW}) when
+      NumDW + NumFail >= N, NumPW < PW ->
+    true;
+enough(_PutCore) ->
+    #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = PW, num_pw =
+        NumPW, num_fail = NumFail} = _PutCore,
+    io:format("W ~p, NumW ~p, DW ~p. NumDW ~p, PW ~p, NumPW ~p, NumFail ~p~n",
+        [W, NumW, DW, NumDW, PW, NumPW, NumFail]),
     false.
 
 %% Get success/fail response once enough results received
