@@ -92,16 +92,16 @@ num_pw(PutCore = #putcore{num_pw=NumPW, idx_type=IdxType}, Idx) ->
 -spec add_result(vput_result(), putcore()) -> putcore().
 add_result({w, Idx, _ReqId}, PutCore = #putcore{results = Results,
                                                 num_w = NumW}) ->
-    num_pw(PutCore#putcore{results = [{Idx, w} | Results],
-                    num_w = NumW + 1}, Idx);
+    PutCore#putcore{results = [{Idx, w} | Results],
+                    num_w = NumW + 1};
 add_result({dw, Idx, _ReqId}, PutCore = #putcore{results = Results,
                                                  num_dw = NumDW}) ->
-    PutCore#putcore{results = [{Idx, {dw, undefined}} | Results],
-                    num_dw = NumDW + 1};
+    num_pw(PutCore#putcore{results = [{Idx, {dw, undefined}} | Results],
+                    num_dw = NumDW + 1}, Idx);
 add_result({dw, Idx, ResObj, _ReqId}, PutCore = #putcore{results = Results,
                                                          num_dw = NumDW}) ->
-    PutCore#putcore{results = [{Idx, {dw, ResObj}} | Results],
-                    num_dw = NumDW + 1};
+    num_pw(PutCore#putcore{results = [{Idx, {dw, ResObj}} | Results],
+                    num_dw = NumDW + 1}, Idx);
 add_result({fail, Idx, _ReqId}, PutCore = #putcore{results = Results,
                                                    num_fail = NumFail}) ->
     PutCore#putcore{results = [{Idx, {error, undefined}} | Results],
@@ -116,14 +116,15 @@ add_result(_Other, PutCore = #putcore{num_fail = NumFail}) ->
 enough(#putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = PW, num_pw = NumPW}) when
       NumW >= W, NumDW >= DW, NumPW >= PW ->
     true;
-%% Enough failures that we can't meet the DW restriction
-enough(#putcore{ w = W, num_w = NumW, num_fail = NumFail, dw_fail_threshold = DWFailThreshold}) when
-      NumW >= W, NumFail >= DWFailThreshold ->
-    true;
 %% Enough failures that we can't meet the PW restriction
 enough(#putcore{ w = W, num_w = NumW, num_fail = NumFail, pw_fail_threshold = PWFailThreshold}) when
       NumW >= W, NumFail >= PWFailThreshold ->
     true;
+%% Enough failures that we can't meet the DW restriction
+enough(#putcore{ w = W, num_w = NumW, num_fail = NumFail, dw_fail_threshold = DWFailThreshold}) when
+      NumW >= W, NumFail >= DWFailThreshold ->
+    true;
+%% Can't even make sloppy W quorom
 enough(#putcore{ w = W, num_w = NumW, num_fail = NumFail, w_fail_threshold = WFailThreshold}) when
       NumW < W, NumFail >= WFailThreshold ->
     true;

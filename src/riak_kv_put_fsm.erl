@@ -283,7 +283,7 @@ validate(timeout, StateData0 = #state{from = {raw, ReqId, _Pid},
                           Preflist2),
     NumPrimaries = length([x || {_,primary} <- Preflist2]),
     NumVnodes = length(Preflist2),
-    MinVnodes = erlang:max(1, erlang:max(W, DW)), % always need at least one vnode
+    MinVnodes = erlang:max(1, erlang:max(W, erlang:max(DW, PW))), % always need at least one vnode
     if
         PW =:= error ->
             process_reply({error, {pw_val_violation, PW0}}, StateData0);
@@ -311,11 +311,13 @@ validate(timeout, StateData0 = #state{from = {raw, ReqId, _Pid},
                 if Disable -> [];
                    true -> get_hooks(postcommit, BucketProps)
                 end,
+            %% PW is the most restrivtive quorom, promote DW if it is lower than PW
+            %% W is the least restrictive quorom, promote to DW if that is larger
+            PromotedDW = erlang:max(DW, PW),
+            PromotedW = erlang:max(W, DW),
             StateData1 = StateData0#state{n=N,
-                                          %% Promote W to the largest of PW and DW
-                                          %% As that as the strictest / most restrictive quorum
-                                          w=erlang:max(W, erlang:max(DW, PW)),
-                                          pw=PW, dw=DW, allowmult=AllowMult,
+                                          w=PromotedW,
+                                          pw=PW, dw=PromotedDW, allowmult=AllowMult,
                                           precommit = Precommit,
                                           postcommit = Postcommit,
                                           req_id = ReqId,
