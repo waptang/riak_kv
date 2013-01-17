@@ -378,6 +378,8 @@ prop_basic_put() ->
                                    {error, Reason, Info0} ->
                                        {{error, Reason}, Info0};
                                    {error, Reason, Info0, Info1} ->
+                                       {{error, Reason, Info0, Info1}, undefined};
+                                   {error, Reason, Info0, Info1, _Info2} ->
                                        {{error, Reason, Info0, Info1}, undefined}
                                end,
 
@@ -567,6 +569,8 @@ expect(VPutResp, H, N, PW, RealPW, W, RealW, DW, EffDW, Options,
         end,
     ExpectPostcommit = case {ExpectResult, Postcommit} of
                            {{error, _}, _} ->
+                               [];
+                           {{error, _, _, _}, _} ->
                                [];
                            {timeout, _} ->
                                [];

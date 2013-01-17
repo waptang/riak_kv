@@ -839,7 +839,9 @@ add_client_info(Reply, Details, State) ->
         ok ->
             {ok, Info};
         {OkError, ObjReason} ->
-            {OkError, ObjReason, Info}
+            {OkError, ObjReason, Info};
+        {OkError, Error, ErrorInfo1, ErrorInfo2} ->
+            {OkError, Error, ErrorInfo1, ErrorInfo2, Info}
     end.
 
 client_info(true, StateData, Info) ->
