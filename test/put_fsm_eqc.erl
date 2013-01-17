@@ -295,10 +295,10 @@ prop_basic_put() ->
 
         N = length(VPutResp),
         {PW, RealPW} = pw_val(N, 1000000, PWSeed),
-        {W, RealW} = w_dw_val(N, 1000000, WSeed),
+        {W, RealW0} = w_dw_val(N, 1000000, WSeed),
         {DW, RealDW}  = w_dw_val(N, RealPW, DWSeed),
 
-
+        
         %% {Q, _Ring, NodeStatus} = fsm_eqc_util:mock_ring(N + NQdiff, NodeStatus0), 
 
         %% Pick the object to put - as ObjectIdxSeed shrinks, it should go
@@ -357,7 +357,11 @@ prop_basic_put() ->
         %% Work out the expected results.  Have to determine the effective dw
         %% the FSM would have used to know when it would have stopped processing responses
         %% and returned to the client.
-        EffDW = get_effective_dw(RealDW, Options, Postcommit),
+        EffDW0 = get_effective_dw(RealDW, Options, Postcommit),
+
+        EffDW = erlang:max(EffDW0, RealPW),
+        RealW = erlang:max(EffDW, RealW0),
+
         ExpectObject = expect_object(H, RealW, EffDW, AllowMult),
         {Expected, ExpectedPostCommits, ExpectedVnodePuts} = 
             expect(VPutResp, H, N, PW, RealPW, W, RealW, DW, EffDW, Options,
@@ -564,9 +568,8 @@ expect(VPutResp, H, N, PW, RealPW, W, RealW, DW, EffDW, Options,
                     [{w, _, _}, {fail, _, _} | _] ->
                         {maybe_add_robj({error, local_put_failed}, ReturnObj, Precommit, Options), VPuts};
                     _ ->
-                        PromotedDW = erlang:max(EffDW, RealPW),
-                        PromotedW = erlang:max(PromotedDW, RealW),
-                        {expect(HNoTimeout, {H, N, PromotedW, PromotedDW, RealPW, 0, 0, 0, 0, ReturnObj, Precommit, PL2}, Options), 
+                        
+                        {expect(HNoTimeout, {H, N, RealW, EffDW, RealPW, 0, 0, 0, 0, ReturnObj, Precommit, PL2}, Options), 
                          VPuts}
                 end
         end,
