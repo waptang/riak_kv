@@ -727,12 +727,19 @@ filter_timeouts(H) ->
                  end, H).
 
 enough_replies({_H, N, W, DW, PW, NumW, NumDW, NumPW, NumFail, _RObj, _Precommit, _PL}) ->
-    MaxWFails =  N - W,
+    MaxWFails =  N - erlang:max(W, PW),
     MaxDWFails =  N - DW,
     MaxPWFails = N - PW,
+    io:format(user, "N ~p, W ~p, DW ~p, PW ~p, NumW ~p, NumDW ~p, NumPW ~p,"
+        "NumFail ~p, MaxWFails ~p, MaxDWFails ~p, MaxPWFails ~p~n",
+        [N, W, DW, PW, NumW, NumDW, NumPW, NumFail, MaxWFails, MaxDWFails,
+            MaxPWFails]),
     if
         NumW >= W andalso NumDW >= DW andalso NumPW >= PW->
             {true, ok};
+
+        NumW < W andalso NumFail > MaxWFails ->
+            {true, {error, w_val_unsatisfied, W, NumW}};
 
         NumW >= W andalso NumFail > MaxPWFails ->
             {true, {error, pw_val_unsatisfied, PW, NumPW}};
@@ -740,8 +747,6 @@ enough_replies({_H, N, W, DW, PW, NumW, NumDW, NumPW, NumFail, _RObj, _Precommit
         NumW >= W andalso NumFail > MaxDWFails ->
             {true, {error, dw_val_unsatisfied, DW, NumDW}};
 
-        NumW < W andalso NumFail > MaxWFails ->
-            {true, {error, w_val_unsatisfied, W, NumW}};
         true ->
             false
     end.
