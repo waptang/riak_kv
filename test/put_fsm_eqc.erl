@@ -81,7 +81,7 @@ eqc_test_() ->
                                                             []}, 5)),
         %% Run the quickcheck tests
         {timeout, 60000, % do not trust the docs - timeout is in msec
-         ?_assertEqual(true, quickcheck(eqc:testing_time(50, ?QC_OUT(prop_basic_put()))))}
+         ?_assertEqual(true, quickcheck(numtests(100, ?QC_OUT(prop_basic_put()))))}
        ]
       }
      ]
@@ -561,7 +561,7 @@ expect(VPutResp, H, N, PW, RealPW, W, RealW, DW, EffDW, Options,
                     [{w, _, _}, {fail, _, _} | _] ->
                         {maybe_add_robj({error, local_put_failed}, ReturnObj, Precommit, Options), VPuts};
                     _ ->
-                        {expect(HNoTimeout, {H, N, RealW, EffDW, 0, 0, 0, ReturnObj, Precommit}, Options), 
+                        {expect(HNoTimeout, {H, N, RealW, EffDW, RealPW, 0, 0, 0, 0, ReturnObj, Precommit, PL2}, Options), 
                          VPuts}
                 end
         end,
@@ -580,7 +580,7 @@ expect(VPutResp, H, N, PW, RealPW, W, RealW, DW, EffDW, Options,
                        end,
     {ExpectResult, ExpectPostcommit, ExpectVnodePuts}.
 
-expect([], {_H, _N, _W, _DW, _NumW, _NumDW, _NumFail, RObj, Precommit}=S,
+expect([], {_H, _N, _W, _DW, _PW, _NumW, _NumDW, _NumPW, _NumFail, RObj, Precommit, _PL}=S,
       Options) ->
     case enough_replies(S) of % this handles W=0 case
         {true, Expect} ->
@@ -588,9 +588,10 @@ expect([], {_H, _N, _W, _DW, _NumW, _NumDW, _NumFail, RObj, Precommit}=S,
         false ->
             maybe_add_robj({error, timeout}, RObj, Precommit, Options)
     end;
-expect([{w, _, _}|Rest], {H, N, W, DW, NumW, NumDW, NumFail, RObj, Precommit},
+expect([{w, Idx, _}|Rest], {H, N, W, DW, PW, NumW, NumDW, NumPW,  NumFail, RObj, Precommit, PL},
       Options) ->
-    S = {H, N, W, DW, NumW + 1, NumDW, NumFail, RObj, Precommit},
+    POK = primacy(Idx, PL),
+    S = {H, N, W, DW, PW, NumW + 1, NumDW, NumPW+POK, NumFail, RObj, Precommit, PL},
 
     case enough_replies(S) of
         {true, Expect} ->
@@ -599,9 +600,9 @@ expect([{w, _, _}|Rest], {H, N, W, DW, NumW, NumDW, NumFail, RObj, Precommit},
         false ->
             expect(Rest, S, Options)
     end;
-expect([DWReply|Rest], {H, N, W, DW, NumW, NumDW, NumFail, RObj, Precommit},
+expect([DWReply|Rest], {H, N, W, DW, PW, NumW, NumDW, NumPW, NumFail, RObj, Precommit, PL},
        Options) when element(1, DWReply) == dw->
-    S = {H, N, W, DW, NumW, NumDW + 1, NumFail, RObj, Precommit},
+    S = {H, N, W, DW, PW, NumW, NumDW + 1, NumPW, NumFail, RObj, Precommit, PL},
     case enough_replies(S) of
         {true, Expect} ->
             maybe_add_robj(Expect, RObj, Precommit, Options);
@@ -609,12 +610,12 @@ expect([DWReply|Rest], {H, N, W, DW, NumW, NumDW, NumFail, RObj, Precommit},
             expect(Rest, S, Options)
     end;
 %% Fail on coordindating vnode - request fails
-expect([{fail, {1, _}, _}|_Rest], {_H, _N, _W, _DW, _NumW, _NumDW, _NumFail, RObj, Precommit},
+expect([{fail, {1, _}, _}|_Rest], {_H, _N, _W, _DW, _PW, _NumW, _NumDW, _NumPW, _NumFail, RObj, Precommit, _PL},
        Options) ->
     maybe_add_robj({error, too_many_fails}, RObj, Precommit, Options);
-expect([{fail, _, _}|Rest], {H, N, W, DW, NumW, NumDW, NumFail, RObj, Precommit},
+expect([{fail, _, _}|Rest], {H, N, W, DW, PW, NumW, NumDW, NumPW, NumFail, RObj, Precommit, PL},
        Options) ->
-    S = {H, N, W, DW, NumW, NumDW, NumFail + 1, RObj, Precommit},
+    S = {H, N, W, DW, PW, NumW, NumDW, NumPW, NumFail + 1, RObj, Precommit, PL},
     case enough_replies(S) of
         {true, Expect} ->
             maybe_add_robj(Expect, RObj, Precommit, Options);
@@ -664,6 +665,16 @@ w_dw_val(N, Min, Seed) ->
           end,
     {Seed, erlang:max(1, erlang:min(Min, Val))}.
 
+%% Is the given index a primary index accoring to the preflist?
+primacy(Idx, Preflist) ->
+    case lists:keyfind(Idx, 1, [{Index, Primacy} ||
+                                   {{Index, _Pid}, Primacy} <- Preflist]) of
+        {Idx, primary} ->
+            1;
+        _ ->
+            0
+    end.
+
 %% Work out W and DW given a seed.
 %% Generate a value from 0..N+1
 pw_val(_N, _Min, garbage) ->
@@ -711,19 +722,22 @@ filter_timeouts(H) ->
                     (_) -> true
                  end, H).
 
-enough_replies({_H, N, W, DW, NumW, NumDW, NumFail, _RObj, _Precommit}) ->
+enough_replies({_H, N, W, DW, PW, NumW, NumDW, NumPW, NumFail, _RObj, _Precommit, _PL}) ->
     MaxWFails =  N - W,
     MaxDWFails =  N - DW,
+    MaxPWFails = N - PW,
     if
-        NumW >= W andalso NumDW >= DW ->
+        NumW >= W andalso NumDW >= DW andalso NumPW >= PW->
             {true, ok};
 
-        NumW < W andalso NumFail > MaxWFails ->
-            {true, {error, w_val_unsatisfied, W, NumW}};
+        NumW >= W andalso NumFail > MaxPWFails ->
+            {true, {error, pw_val_unsatisfied, PW, NumPW}};
 
         NumW >= W andalso NumFail > MaxDWFails ->
             {true, {error, dw_val_unsatisfied, DW, NumDW}};
 
+        NumW < W andalso NumFail > MaxWFails ->
+            {true, {error, w_val_unsatisfied, W, NumW}};
         true ->
             false
     end.
