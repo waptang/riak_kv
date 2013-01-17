@@ -168,23 +168,8 @@ new_v1(Vclock, Siblings) ->
 bin_content(#r_content{metadata=Meta, value=Val}) ->
     ValBin = term_to_binary(Val),
     ValLen = byte_size(ValBin),
-    Folder = fun(Key, Value, {{Vt,Del,Lm}=Elems,RestBin}) ->
-                     case Key of
-                         ?MD_VTAG -> {{Value, Del, Lm}, RestBin};
-                         ?MD_LASTMOD -> {{Vt, Del, Value}, RestBin};
-                         ?MD_DELETED when Value =:= true -> {{Vt, <<1>>, Lm}, RestBin};
-                         ?MD_DELETED -> {{Vt, <<0>>, Lm}, RestBin};
-                         _Other ->
-                             ValueBin = term_to_binary(Value),
-                             ValueLen = byte_size(ValueBin),
-                             KeyBin = term_to_binary(Key),
-                             KeyLen = byte_size(KeyBin),
-                             MetaBin = <<KeyLen:32/integer, KeyBin/binary, ValueLen:32/integer, ValueBin/binary>>,
-                             {Elems, <<RestBin/binary, MetaBin/binary>>}
-                     end
-             end,
-    {{VTagVal, Deleted, LastModVal}, RestBin} = dict:fold(Folder, {{undefined, <<0>>, undefined}, <<>>}, Meta),
-    VTagBin = case VTagVal of 
+    {{VTagVal, Deleted, LastModVal}, RestBin} = dict:fold(fun fold_meta_to_bin/3, {{undefined, <<0>>, undefined}, <<>>}, Meta),
+    VTagBin = case VTagVal of
                   undefined ->  ?EMPTY_VTAG_BIN;
                   _ -> list_to_binary(VTagVal)
               end,
@@ -202,6 +187,22 @@ bin_contents(Contents) ->
                 <<Acc/binary, (bin_content(Content))/binary>>
         end,
     lists:foldl(F, <<>>, Contents).
+
+fold_meta_to_bin(?MD_VTAG, Value, {{_Vt,Del,Lm},RestBin}) ->
+    {{Value, Del, Lm}, RestBin};
+fold_meta_to_bin(?MD_LASTMOD, Value, {{Vt,Del,_Lm},RestBin}) ->
+     {{Vt, Del, Value}, RestBin};
+fold_meta_to_bin(?MD_DELETED, true, {{Vt,_Del,Lm},RestBin}) ->
+     {{Vt, <<1>>, Lm}, RestBin};
+fold_meta_to_bin(?MD_DELETED, _, {{Vt,_Del,Lm},RestBin}) ->
+    {{Vt, <<0>>, Lm}, RestBin};
+fold_meta_to_bin(Key, Value, {{_Vt,_Del,_Lm}=Elems,RestBin}) ->
+    ValueBin = term_to_binary(Value),
+    ValueLen = byte_size(ValueBin),
+    KeyBin = term_to_binary(Key),
+    KeyLen = byte_size(KeyBin),
+    MetaBin = <<KeyLen:32/integer, KeyBin/binary, ValueLen:32/integer, ValueBin/binary>>,
+    {Elems, <<RestBin/binary, MetaBin/binary>>}.
 
 %% @doc Constructor for new riak objects.
 -spec new(Bucket::bucket(), Key::key(), Value::value()) -> riak_object().
