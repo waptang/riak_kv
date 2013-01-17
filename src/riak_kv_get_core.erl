@@ -204,8 +204,8 @@ info(#getcore{num_ok = NumOks, num_fail = NumFail, results = Results}) ->
 %% ====================================================================
 
 strict_descendant(O1, O2) ->
-    vclock:descends(riak_object:vclock(O1),riak_object:vclock(O2)) andalso
-    not vclock:descends(riak_object:vclock(O2),riak_object:vclock(O1)).
+    vclock:dominates(riak_object:vclock(O1),
+                     riak_object:vclock(O2)).
 
 merge(Replies, AllowMult) ->
     RObjs = [RObj || {_I, {ok, RObj}} <- Replies],
