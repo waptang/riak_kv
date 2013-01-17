@@ -59,13 +59,13 @@
 
 %% Riak Objects in binary format (on disk)
 
-%% -type binobj_header()     :: <<53:8, Version:8, VClockLen:32, VClockBin/binary, 
+%% -type binobj_header()     :: <<53:8, Version:8, VClockLen:32, VClockBin/binary,
 %%                                SibCount:32>>.
 %% -type binobj_flags()      :: <<Deleted:1, 0:7/bitstring>>.
-%% -type binobj_umeta_pair() :: <<KeyLen:32, Key/binary, ValueLen:32, Value/binary>>. 
+%% -type binobj_umeta_pair() :: <<KeyLen:32, Key/binary, ValueLen:32, Value/binary>>.
 %% -type binobj_meta()       :: <<LastMod:LastModLen, VTag:128, binobj_flags(),
 %%                                [binobj_umeta_pair()]>>.
-%% -type binobj_value()      :: <<ValueLen:32, ValueBin/binary, MetaLen:32, 
+%% -type binobj_value()      :: <<ValueLen:32, ValueBin/binary, MetaLen:32,
 %%                                [binobj_meta()]>>.
 %% -type binobj()            :: <<binobj_header(), [binobj_value()]>>.
 
@@ -112,10 +112,10 @@ binary_to_robj(B,K,<<?MAGIC:8/integer, 1:8/integer, Rest/binary>>=_ObjBin) ->
     end;
 binary_to_robj(_B, _K, <<?MAGIC, _Ver, _Rest/binary>>=_ObjBin) ->
     {error, unknown_version}.
-        
+
 sibs_of_binary(Count,SibsBin) ->
     sibs_of_binary(Count, SibsBin, []).
-    
+
 sibs_of_binary(0, <<>>, Result) -> lists:reverse(Result);
 sibs_of_binary(0, _NotEmpty, _Result) ->
     {error, corrupt_contents};
@@ -126,20 +126,20 @@ sibs_of_binary(Count, SibsBin, Result) ->
 sib_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary, Rest/binary>>) ->
     <<LMMega:32/integer, LMSecs:32/integer, LMMicro:32/integer, VTagLen:8/integer, VTag:VTagLen/binary, Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
     DeletedVal = case Deleted of <<1>> -> true; _False -> false end,
-    MDList0 = case {LMMega, LMSecs, LMMicro} of                  
+    MDList0 = case {LMMega, LMSecs, LMMicro} of
                   {0, 0, 0} -> []; %% original meta had no last mod
                   LM -> [{?MD_LASTMOD, LM}]
               end,
-    MDList1 = case VTag of 
+    MDList1 = case VTag of
                   ?EMPTY_VTAG_BIN -> MDList0;
                   _ -> MDList0 ++ [{?MD_VTAG, binary_to_list(VTag)}]
               end,
-    MDList = case DeletedVal of 
-                 true -> 
-                     MDList1 
+    MDList = case DeletedVal of
+                 true ->
+                     MDList1
                          ++ [{?MD_DELETED, DeletedVal}]
                          ++ meta_of_binary(MetaRestBin);
-                 false ->  
+                 false ->
                      MDList1 ++ meta_of_binary(MetaRestBin)
              end,
     MD = dict:from_list(MDList),
@@ -188,15 +188,15 @@ bin_content(#r_content{metadata=Meta, value=Val}) ->
                   undefined ->  ?EMPTY_VTAG_BIN;
                   _ -> list_to_binary(VTagVal)
               end,
-    VTagLen = byte_size(VTagBin),                                              
-    LastModBin = case LastModVal of 
+    VTagLen = byte_size(VTagBin),
+    LastModBin = case LastModVal of
                      undefined -> <<0:32/integer, 0:32/integer, 0:32/integer>>;
                      {Mega,Secs,Micro} -> <<Mega:32/integer, Secs:32/integer, Micro:32/integer>>
                  end,
     MetaBin = <<LastModBin/binary, VTagLen:8/integer, VTagBin:VTagLen/binary, Deleted:1/binary-unit:8, RestBin/binary>>,
     MetaLen = byte_size(MetaBin),
     <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary>>.
-    
+
 bin_contents(Contents) ->
     F = fun(Content, Acc) ->
                 <<Acc/binary, (bin_content(Content))/binary>>
@@ -642,7 +642,7 @@ dejsonify_meta_value({struct, PList}) ->
                         [{Key, dejsonify_meta_value(V)}|Acc]
                 end, [], PList);
 dejsonify_meta_value(Value) -> Value.
-                               
+
 
 is_updated(_Object=#r_object{updatemetadata=M,updatevalue=V}) ->
     case dict:find(clean, M) of
@@ -668,7 +668,7 @@ syntactic_merge(CurrentObject, NewObject) ->
                       true  -> apply_updates(CurrentObject);
                       false -> CurrentObject
                   end,
-    
+
     case ancestors([UpdatedCurr, UpdatedNew]) of
         [] -> merge(UpdatedCurr, UpdatedNew);
         [Ancestor] ->
@@ -930,7 +930,7 @@ check_most_recent({V1, T1, D1}, {V2, T2, D2}) ->
     ?assertEqual(C3, C4),
 
     C3#r_content.value.
-    
+
 
 determinstic_most_recent_test() ->
     D = calendar:datetime_to_gregorian_seconds(
