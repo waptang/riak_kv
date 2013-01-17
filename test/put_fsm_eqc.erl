@@ -296,7 +296,8 @@ prop_basic_put() ->
         N = length(VPutResp),
         {PW, RealPW} = pw_val(N, 1000000, PWSeed),
         {W, RealW} = w_dw_val(N, 1000000, WSeed),
-        {DW, RealDW}  = w_dw_val(N, RealW, DWSeed),
+        {DW, RealDW}  = w_dw_val(N, RealPW, DWSeed),
+
 
         %% {Q, _Ring, NodeStatus} = fsm_eqc_util:mock_ring(N + NQdiff, NodeStatus0), 
 
@@ -563,7 +564,9 @@ expect(VPutResp, H, N, PW, RealPW, W, RealW, DW, EffDW, Options,
                     [{w, _, _}, {fail, _, _} | _] ->
                         {maybe_add_robj({error, local_put_failed}, ReturnObj, Precommit, Options), VPuts};
                     _ ->
-                        {expect(HNoTimeout, {H, N, RealW, EffDW, RealPW, 0, 0, 0, 0, ReturnObj, Precommit, PL2}, Options), 
+                        PromotedDW = erlang:max(EffDW, RealPW),
+                        PromotedW = erlang:max(PromotedDW, RealW),
+                        {expect(HNoTimeout, {H, N, PromotedW, PromotedDW, RealPW, 0, 0, 0, 0, ReturnObj, Precommit, PL2}, Options), 
                          VPuts}
                 end
         end,
@@ -592,10 +595,9 @@ expect([], {_H, _N, _W, _DW, _PW, _NumW, _NumDW, _NumPW, _NumFail, RObj, Precomm
         false ->
             maybe_add_robj({error, timeout}, RObj, Precommit, Options)
     end;
-expect([{w, Idx, _}|Rest], {H, N, W, DW, PW, NumW, NumDW, NumPW,  NumFail, RObj, Precommit, PL},
+expect([{w, _Idx, _}|Rest], {H, N, W, DW, PW, NumW, NumDW, NumPW,  NumFail, RObj, Precommit, PL},
       Options) ->
-    POK = primacy(Idx, PL),
-    S = {H, N, W, DW, PW, NumW + 1, NumDW, NumPW+POK, NumFail, RObj, Precommit, PL},
+    S = {H, N, W, DW, PW, NumW + 1, NumDW, NumPW, NumFail, RObj, Precommit, PL},
 
     case enough_replies(S) of
         {true, Expect} ->
@@ -606,7 +608,10 @@ expect([{w, Idx, _}|Rest], {H, N, W, DW, PW, NumW, NumDW, NumPW,  NumFail, RObj,
     end;
 expect([DWReply|Rest], {H, N, W, DW, PW, NumW, NumDW, NumPW, NumFail, RObj, Precommit, PL},
        Options) when element(1, DWReply) == dw->
-    S = {H, N, W, DW, PW, NumW, NumDW + 1, NumPW, NumFail, RObj, Precommit, PL},
+    Idx = element(2, DWReply),
+    POK = primacy(Idx, PL),
+
+    S = {H, N, W, DW, PW, NumW, NumDW + 1, NumPW+POK, NumFail, RObj, Precommit, PL},
     case enough_replies(S) of
         {true, Expect} ->
             maybe_add_robj(Expect, RObj, Precommit, Options);
@@ -741,12 +746,14 @@ enough_replies({_H, N, W, DW, PW, NumW, NumDW, NumPW, NumFail, _RObj, _Precommit
         NumW < W andalso NumFail > MaxWFails ->
             {true, {error, w_val_unsatisfied, W, NumW}};
 
-        NumW >= W andalso NumFail > MaxPWFails ->
-            {true, {error, pw_val_unsatisfied, PW, NumPW}};
-
         NumW >= W andalso NumFail > MaxDWFails ->
             {true, {error, dw_val_unsatisfied, DW, NumDW}};
 
+        NumW >= W andalso NumFail > MaxPWFails ->
+            {true, {error, pw_val_unsatisfied, PW, NumPW}};
+
+        NumW >= W andalso NumFail + NumDW >= N andalso NumPW < PW ->
+            {true, {error, pw_val_unsatisfied, PW, NumPW}};
         true ->
             false
     end.
