@@ -361,7 +361,7 @@ prop_basic_put() ->
         EffDW = erlang:max(EffDW0, RealPW),
         RealW = erlang:max(EffDW, RealW0),
 
-        ExpectObject = expect_object(H, RealW, EffDW, AllowMult),
+        ExpectObject = expect_object(H, RealW, EffDW, RealPW, AllowMult, PL2),
         {Expected, ExpectedPostCommits, ExpectedVnodePuts} = 
             expect(VPutResp, H, N, PW, RealPW, W, RealW, DW, EffDW, Options,
                    Precommit, Postcommit, ExpectObject, PL2),
@@ -636,29 +636,33 @@ expect([{fail, _, _}|Rest], {H, N, W, DW, PW, NumW, NumDW, NumPW, NumFail, RObj,
 expect([{{timeout,_Stage}, _, _}|Rest], S, Options) ->
     expect(Rest, S, Options).
 
-expect_object(H, W, DW, AllowMult) ->
-    expect_object(filter_timeouts(H), W, DW, AllowMult, 0, 0, []).
+expect_object(H, W, DW, PW, AllowMult, PL) ->
+    expect_object(filter_timeouts(H), W, DW, PW, AllowMult, PL, 0, 0, 0, []).
 
 %% Once W and DW are met, reconcile the returned object
-expect_object([], _W, _DW, _AllowMult, _NumW, _NumDW, _Objs) ->
+expect_object([], _W, _DW, _PW, _AllowMult, _PL, _NumW, _NumDW, _NumPW, _Objs) ->
     noreply;
-expect_object([{w,_,_} | H], W, DW, AllowMult, NumW, NumDW, Objs) ->
-    case NumW+1 >= W andalso NumDW >= DW andalso Objs /= [] of
+expect_object([{w,_,_} | H], W, DW, PW, AllowMult, PL, NumW, NumDW, NumPW, Objs) ->
+    case NumW+1 >= W andalso NumDW >= DW andalso
+            Objs /= [] andalso NumPW >= PW of
         true ->
             riak_object:reconcile(Objs, AllowMult);
         false ->
-            expect_object(H, W, DW, AllowMult, NumW + 1, NumDW, Objs)
+            expect_object(H, W, DW, PW, AllowMult, PL, NumW + 1, NumDW, NumPW, Objs)
     end;
  %%   expect_object(H, W, DW, AllowMult, NumW + 1, NumDW, Objs);
-expect_object([{dw,_,Obj, _} | H], W, DW, AllowMult, NumW, NumDW, Objs) ->
-    case NumW >= W andalso NumDW +1 >= DW of
+expect_object([{dw,Idx,Obj, _} | H], W, DW,  PW, AllowMult, PL, NumW, NumDW, NumPW, Objs) ->
+    POK = primacy(Idx, PL),
+    case NumW >= W andalso NumDW +1 >= DW andalso NumPW+POK >= PW of
         true ->
+            io:format("reconcile object for index ~p~n", [Idx]),
             riak_object:reconcile([Obj | Objs], AllowMult);
         false ->
-            expect_object(H, W, DW, AllowMult, NumW, NumDW + 1, [Obj | Objs])
+            expect_object(H, W, DW, PW, AllowMult, PL, NumW, NumDW + 1,
+                NumPW+POK, [Obj | Objs])
     end;
-expect_object([_ | H], W, DW, AllowMult, NumW, NumDW, Objs) ->
-    expect_object(H, W, DW, AllowMult, NumW, NumDW, Objs).
+expect_object([_ | H], W, DW, PW, AllowMult, PL, NumW, NumDW, NumPW, Objs) ->
+    expect_object(H, W, DW, PW, AllowMult, PL, NumW, NumDW, NumPW, Objs).
 
 %% Work out W and DW given a seed.
 %% Generate a value from 0..N+1

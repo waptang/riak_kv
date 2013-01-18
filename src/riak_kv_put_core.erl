@@ -117,12 +117,12 @@ enough(#putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = PW, num_pw = 
       NumW >= W, NumDW >= DW, NumPW >= PW ->
     true;
 %% Enough failures that we can't meet the PW restriction
-enough(#putcore{ w = W, num_w = NumW, num_fail = NumFail, pw_fail_threshold = PWFailThreshold}) when
-      NumW >= W, NumFail >= PWFailThreshold ->
+enough(#putcore{ num_fail = NumFail, pw_fail_threshold = PWFailThreshold}) when
+      NumFail >= PWFailThreshold ->
     true;
 %% Enough failures that we can't meet the DW restriction
-enough(#putcore{ w = W, num_w = NumW,  num_fail = NumFail, dw_fail_threshold = DWFailThreshold}) when
-      NumW >= W, NumFail >= DWFailThreshold ->
+enough(#putcore{ num_fail = NumFail, dw_fail_threshold = DWFailThreshold}) when
+      NumFail >= DWFailThreshold ->
     true;
 %% Can't even make sloppy W quorom
 %% enough(#putcore{ w = W, num_w = NumW, num_fail = NumFail, w_fail_threshold = WFailThreshold}) when
@@ -150,8 +150,8 @@ response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = P
       NumW >= W, NumDW >= DW, NumPW < PW ->
     {{error, pw_val_unsatisfied, PW, NumPW}, PutCore};
 %% Didn't make DW
-response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW}) when
-      NumW >= W, NumDW < DW ->
+response(PutCore = #putcore{n = N, num_fail = NumFail, dw = DW, num_dw = NumDW}) when
+      NumFail > N - DW ->
     {{error, dw_val_unsatisfied, DW, NumDW}, PutCore};
 %% Didn't even make quorom
 response(PutCore = #putcore{w = W, num_w = NumW}) ->
