@@ -275,7 +275,7 @@ validate(timeout, StateData0 = #state{from = {raw, ReqId, _Pid},
         _ ->
             %% DW must always be 1 with node-based vclocks.
             %% The coord vnode is responsible for incrementing the vclock
-            DW = erlang:min(DW1, erlang:max(1, W))
+            DW = erlang:max(DW1, 1)
     end,
     IdxType = lists:foldl(fun({{Part, _Node}, Type}, Acc) ->
                                   orddict:store(Part, Type, Acc) end,
@@ -284,6 +284,8 @@ validate(timeout, StateData0 = #state{from = {raw, ReqId, _Pid},
     NumPrimaries = length([x || {_,primary} <- Preflist2]),
     NumVnodes = length(Preflist2),
     MinVnodes = erlang:max(1, erlang:max(W, erlang:max(DW, PW))), % always need at least one vnode
+
+    io:format(user, "DW1: ~p DW: ~p N: ~p W: ~p~n", [DW1, DW, N, W]),
     if
         PW =:= error ->
             process_reply({error, {pw_val_violation, PW0}}, StateData0);

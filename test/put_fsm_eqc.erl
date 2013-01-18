@@ -295,10 +295,9 @@ prop_basic_put() ->
 
         N = length(VPutResp),
         {PW, RealPW} = pw_val(N, 1000000, PWSeed),
-        {W, RealW0} = w_dw_val(N, 1000000, WSeed),
-        {DW, RealDW}  = w_dw_val(N, RealW0, DWSeed),
+        {DW, RealDW}  = w_dw_val(N, RealPW, DWSeed),
+        {W, RealW0} = w_dw_val(N, RealDW, WSeed),
 
-        
         %% {Q, _Ring, NodeStatus} = fsm_eqc_util:mock_ring(N + NQdiff, NodeStatus0), 
 
         %% Pick the object to put - as ObjectIdxSeed shrinks, it should go
@@ -540,7 +539,7 @@ expect(VPutResp, H, N, PW, RealPW, W, RealW, DW, EffDW, Options,
             DW =:= garbage ->
                 {{error, {dw_val_violation, garbage}}, 0};
 
-            RealW > N orelse EffDW > N orelse RealPW > N ->
+            RealW > N orelse EffDW > N orelse RealPW > N  ->
                 {{error, {n_val_violation, N}}, 0};
 
             RealPW > NumPrimaries ->
@@ -667,7 +666,7 @@ w_dw_val(_N, _Min, garbage) ->
     {garbage, 1000000};
 w_dw_val(N, Min, Seed) when is_number(Seed) ->
     Val = Seed rem (N + 2),
-    {Val, erlang:max(1, erlang:min(Min, Val))};
+    {Val, erlang:max(1, erlang:max(Min, Val))};
 w_dw_val(N, Min, Seed) ->
     Val = case Seed of
               one -> 1;
@@ -675,7 +674,7 @@ w_dw_val(N, Min, Seed) ->
               X when X == quorum; X == default; X == missing -> (N div 2) + 1;
               _ -> Seed
           end,
-    {Seed, erlang:max(1, erlang:min(Min, Val))}.
+    {Seed, erlang:max(Min, Val)}.
 
 %% Is the given index a primary index accoring to the preflist?
 primacy(Idx, Preflist) ->
@@ -734,32 +733,53 @@ filter_timeouts(H) ->
                     (_) -> true
                  end, H).
 
-enough_replies({_H, N, W, DW, PW, NumW, NumDW, NumPW, NumFail, _RObj, _Precommit, _PL}) ->
-    MaxWFails =  N - erlang:max(W, PW),
+enough_replies({_H, N, W, DW, PW, NumW, NumDW, NumPW, NumFail, _RObj, _Precommit, _PL}=S) ->
+    MaxWFails =  N - W,
     MaxDWFails =  N - DW,
     MaxPWFails = N - PW,
     io:format(user, "N ~p, W ~p, DW ~p, PW ~p, NumW ~p, NumDW ~p, NumPW ~p,"
         "NumFail ~p, MaxWFails ~p, MaxDWFails ~p, MaxPWFails ~p~n",
         [N, W, DW, PW, NumW, NumDW, NumPW, NumFail, MaxWFails, MaxDWFails,
             MaxPWFails]),
-    if
-        NumW >= W andalso NumDW >= DW andalso NumPW >= PW->
-            {true, ok};
 
-        NumW < W andalso NumFail > MaxWFails ->
-            {true, {error, w_val_unsatisfied, W, NumW}};
+    enough(S).
 
-        NumW >= W andalso NumFail > MaxDWFails ->
-            {true, {error, dw_val_unsatisfied, DW, NumDW}};
+%% All quorum satisfied
+enough({_H, _N, W, DW, PW, NumW, NumDW, NumPW, _NumFail, _RObj, _Precommit, _PL}) when
+      NumW >= W, NumDW >= DW, NumPW >= PW ->
+    {true, ok};
+%% Too many failures to reach DW
+enough({_H, N, _W, DW, _PW, _NumW, NumDW, _NumPW, NumFail, _RObj, _Precommit, _PL}) when
+      NumFail > N - DW ->
+    {true, {error, dw_val_unsatisfied, DW, NumDW}};
+%% Got N responses, but not PW
+enough({_H, N, _W, _DW, PW, _NumW, NumDW, NumPW, NumFail, _RObj, _Precommit, _PL}) when
+      NumFail + NumDW >= N, NumPW < PW ->
+    {true, {error, pw_val_unsatisfied, PW, NumPW}};
+enough(_) ->
+    false.
 
-        NumW >= W andalso NumFail > MaxPWFails ->
-            {true, {error, pw_val_unsatisfied, PW, NumPW}};
+    %% if
 
-        NumW >= W andalso NumFail + NumDW >= N andalso NumPW < PW ->
-            {true, {error, pw_val_unsatisfied, PW, NumPW}};
-        true ->
-            false
-    end.
+    %%     %% All quora met
+    %%     NumW >= W andalso NumDW >= DW andalso NumPW >= PW->
+    %%         {true, ok};
+
+    %%     %% W met, but enough failures that DW can never be met
+    %%     NumW >= W andalso NumFail > MaxDWFails ->
+    %%         {true, {error, dw_val_unsatisfied, DW, NumDW}};
+
+    %%     NumW < W andalso NumFail > MaxWFails ->
+    %%         {true, {error, w_val_unsatisfied, W, NumW}};
+
+    %%     NumW >= W andalso NumFail > MaxPWFails ->
+    %%         {true, {error, pw_val_unsatisfied, PW, NumPW}};
+
+    %%     NumW >= W andalso NumFail + NumDW >= N andalso NumPW < PW ->
+    %%         {true, {error, pw_val_unsatisfied, PW, NumPW}};
+    %%     true ->
+    %%         false
+%%    end.
  
 maybe_add_robj(ok, RObj, Precommit, Options) ->
     case precommit_should_fail(Precommit, Options) of
