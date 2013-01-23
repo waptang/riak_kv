@@ -334,7 +334,6 @@ update_perform(State2=#state{dirty_segments=Dirty, segments=NumSegments}) ->
     %% Segments = gb_sets:to_list(Dirty),
     Segments = bitarray_to_list(Dirty),
     State3 = update_tree(Segments, State2),
-    catch eleveldb:iterator_close(State2#state.itr),
     %% State3#state{dirty_segments=gb_sets:new()}.
     State3#state{dirty_segments=bitarray_new(NumSegments)}.
 
