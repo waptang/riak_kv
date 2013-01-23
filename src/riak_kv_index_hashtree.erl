@@ -269,9 +269,8 @@ handle_call({compare, Id, Remote, AccFun}, From, State) ->
     {noreply, State};
 
 handle_call(destroy, _From, State) ->
-    {_,Tree0} = hd(State#state.trees),
-    hashtree:destroy(Tree0),
-    {stop, normal, ok, State};
+    State2 = destroy_trees(State),
+    {stop, normal, ok, State2};
 
 handle_call(_Request, _From, State) ->
     Reply = ok,
@@ -634,14 +633,18 @@ maybe_clear(State=#state{lock=undefined, built=true}) ->
 maybe_clear(State) ->
     State.
 
--spec clear_tree(state()) -> state().
-clear_tree(State=#state{index=Index, trees=Trees}) ->
-    lager:debug("Clearing tree ~p", [State#state.index]),
-    {_,Tree0} = hd(Trees),
+destroy_trees(State=#state{trees=Trees}) ->
+    Trees2 = [{IdxN, hashtree:close(Tree)} || {IdxN, Tree} <- Trees],
+    {_,Tree0} = hd(Trees2),
     hashtree:destroy(Tree0),
+    State#state{trees=Trees2}.
+
+-spec clear_tree(state()) -> state().
+clear_tree(State=#state{index=Index}) ->
+    State2 = destroy_trees(State),
     IndexNs = riak_kv_util:responsible_preflists(Index),
-    State2 = init_trees(IndexNs, State#state{trees=orddict:new()}),
-    State2#state{built=false}.
+    State3 = init_trees(IndexNs, State2#state{trees=orddict:new()}),
+    State3#state{built=false}.
 
 -spec maybe_build(state()) -> state().
 maybe_build(State=#state{built=false}) ->
