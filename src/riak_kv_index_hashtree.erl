@@ -633,11 +633,11 @@ maybe_clear(State=#state{lock=undefined, built=true}) ->
 maybe_clear(State) ->
     State.
 
-destroy_trees(State=#state{trees=Trees}) ->
-    Trees2 = [{IdxN, hashtree:close(Tree)} || {IdxN, Tree} <- Trees],
-    {_,Tree0} = hd(Trees2),
+destroy_trees(State) ->
+    State2 = close_trees(State),
+    {_,Tree0} = hd(State2#state.trees),
     hashtree:destroy(Tree0),
-    State#state{trees=Trees2}.
+    State2.
 
 -spec clear_tree(state()) -> state().
 clear_tree(State=#state{index=Index}) ->
@@ -682,6 +682,6 @@ build_or_rehash(Self, State=#state{index=Index, trees=Trees}) ->
             gen_server:cast(Self, build_failed)
     end.
 
-close_trees(State) ->
-    {_,Tree0} = hd(State#state.trees),
-    hashtree:close(Tree0).
+close_trees(State=#state{trees=Trees}) ->
+    Trees2 = [{IdxN, hashtree:close(Tree)} || {IdxN, Tree} <- Trees],
+    State#state{trees=Trees2}.
