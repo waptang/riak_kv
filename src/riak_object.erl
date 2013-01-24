@@ -88,7 +88,6 @@
 -export([to_json/1, from_json/1]).
 -export([index_specs/1, diff_index_specs/2]).
 -export([set_contents/2, set_vclock/2]). %% INTERNAL, only for riak_*
--export([new_v1/2]). %% TODO: remove when referenced.
 -export([robj_to_binary/1, binary_to_robj/3]).
 
 %% @doc Convert riak object to binary form
@@ -143,7 +142,7 @@ sib_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, Met
                      MDList1 ++ meta_of_binary(MetaRestBin)
              end,
     MD = dict:from_list(MDList),
-    {#r_content{metadata=MD, value=binary_to_term(ValBin)}, Rest}.
+    {#r_content{metadata=MD, value=decode_maybe_binary(ValBin)}, Rest}.
 
 
 meta_of_binary(MetaBin) ->
@@ -151,8 +150,8 @@ meta_of_binary(MetaBin) ->
 meta_of_binary(<<>>, Acc) ->
     Acc;
 meta_of_binary(<<KeyLen:32/integer, KeyBin:KeyLen/binary, ValueLen:32/integer, ValueBin:ValueLen/binary, Rest/binary>>, ResultList) ->
-    Key = binary_to_term(KeyBin),
-    Value = binary_to_term(ValueBin),
+    Key = decode_maybe_binary(KeyBin),
+    Value = decode_maybe_binary(ValueBin),
     meta_of_binary(Rest, [{Key, Value} | ResultList]).
 
 %% @doc Contruct new binary riak objects.
@@ -166,7 +165,7 @@ new_v1(Vclock, Siblings) ->
 
 -spec bin_content(#r_content{}) -> r_content_bin().
 bin_content(#r_content{metadata=Meta, value=Val}) ->
-    ValBin = term_to_binary(Val),
+    ValBin = encode_maybe_binary(Val),
     ValLen = byte_size(ValBin),
     {{VTagVal, Deleted, LastModVal}, RestBin} = dict:fold(fun fold_meta_to_bin/3, {{undefined, <<0>>, undefined}, <<>>}, Meta),
     VTagBin = case VTagVal of
@@ -197,12 +196,22 @@ fold_meta_to_bin(?MD_DELETED, true, {{Vt,_Del,Lm},RestBin}) ->
 fold_meta_to_bin(?MD_DELETED, _, {{Vt,_Del,Lm},RestBin}) ->
     {{Vt, <<0>>, Lm}, RestBin};
 fold_meta_to_bin(Key, Value, {{_Vt,_Del,_Lm}=Elems,RestBin}) ->
-    ValueBin = term_to_binary(Value),
+    ValueBin = encode_maybe_binary(Value),
     ValueLen = byte_size(ValueBin),
-    KeyBin = term_to_binary(Key),
+    KeyBin = encode_maybe_binary(Key),
     KeyLen = byte_size(KeyBin),
     MetaBin = <<KeyLen:32/integer, KeyBin/binary, ValueLen:32/integer, ValueBin/binary>>,
     {Elems, <<RestBin/binary, MetaBin/binary>>}.
+
+encode_maybe_binary(Bin) when is_binary(Bin) ->
+    <<1, Bin/binary>>;
+encode_maybe_binary(Bin) ->
+    <<0, (term_to_binary(Bin))/binary>>.
+
+decode_maybe_binary(<<1, Bin/binary>>) ->
+    Bin;
+decode_maybe_binary(<<0, Bin/binary>>) ->
+    binary_to_term(Bin).
 
 %% @doc Constructor for new riak objects.
 -spec new(Bucket::bucket(), Key::key(), Value::value()) -> riak_object().
