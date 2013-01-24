@@ -513,11 +513,13 @@ expect(State = #state{history = History, objects = Objects,
 notfound_or_error(NotFound, 0, 0, _Oks, _R, _PR, _PROks) when NotFound > 0 ->
     notfound;
 notfound_or_error(_NotFound, _NumNotDeleted, _Err, Oks, R, PR, PROks) ->
-    case Oks >= erlang:max(R, PR) of
-        true ->
+    %% PR trumps R, if PR >= R
+    if Oks >= R, PROks < PR ->
             {pr_val_unsatisfied, PR, PROks};
-        false ->
-            {r_val_unsatisfied, erlang:max(R, PR), Oks}
+        R > PR ->
+            {r_val_unsatisfied, erlang:max(R, PR), Oks};
+        true ->
+            {pr_val_unsatisfied, PR, PROks}
     end.
 
 expect(H, State = #state{n = N, real_r = R, real_pr = PR, deleted = Deleted, notfound_is_ok = NotFoundIsOk,

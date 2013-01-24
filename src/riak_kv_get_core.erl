@@ -151,9 +151,13 @@ response(#getcore{num_notfound = NumNotFound, num_ok = NumOK,
 response(#getcore{r = R, pr = PR, num_ok = NumR, num_pok = NumPR} = GetCore)
       when PR > 0, NumPR < PR, NumR >= R ->
     {{error, {pr_val_unsatisfied, PR,  NumPR}}, GetCore};
-%% R is unsatisfied
+%% PR and/or R are unsatisfied, but PR is more restrictive
+response(#getcore{r = R, num_pok = NumPR, pr = PR} = GetCore) when PR >= R ->
+    {{error, {pr_val_unsatisfied, PR,  NumPR}}, GetCore};
+%% PR and/or R are unsatisfied, but R is more restrictive
 response(#getcore{r = R, num_ok = NumR} = GetCore) ->
     {{error, {r_val_unsatisfied, R,  NumR}}, GetCore}.
+
 
 %% Check if all expected results have been added
 -spec has_all_results(getcore()) -> boolean().
@@ -353,6 +357,37 @@ response_test_() ->
                                     {3, {ok, RObj}}]})),
                     ok
             end},
+        {"R & PR unsatisfied, PR >= R",
+            fun() ->
+                    RObj = riak_object:new(<<"foo">>, <<"bar">>, <<"baz">>),
+                    ?assertMatch({{error, {pr_val_unsatisfied, 3, 1}}, _},
+                        response(#getcore{n= 3, r = 2, pr=3,
+                                fail_threshold = 1, num_ok = 1, num_pok = 1,
+                                allow_mult = false,
+                                num_notfound = 0, num_deleted = 0,
+                                num_fail = 2,
+                                results= [
+                                    {1, {ok, RObj}},
+                                    {2, {ok, RObj}},
+                                    {3, {ok, RObj}}]})),
+                    ok
+            end},
+        {"R & PR unsatisfied, R > PR",
+            fun() ->
+                    RObj = riak_object:new(<<"foo">>, <<"bar">>, <<"baz">>),
+                    ?assertMatch({{error, {r_val_unsatisfied, 3, 1}}, _},
+                        response(#getcore{n= 3, r = 3, pr=2,
+                                fail_threshold = 1, num_ok = 1, num_pok = 1,
+                                allow_mult = false,
+                                num_notfound = 0, num_deleted = 0,
+                                num_fail = 2,
+                                results= [
+                                    {1, {ok, RObj}},
+                                    {2, {ok, RObj}},
+                                    {3, {ok, RObj}}]})),
+                    ok
+            end},
+
         {"All results notfound/tombstone",
             fun() ->
                     RObj = riak_object:new(<<"foo">>, <<"bar">>, <<"baz">>),
