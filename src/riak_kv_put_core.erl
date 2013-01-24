@@ -131,10 +131,15 @@ response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = P
 response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = PW, num_pw = NumPW}) when
       NumW >= W, NumDW >= DW, NumPW < PW ->
     {{error, pw_val_unsatisfied, PW, NumPW}, PutCore};
-%% Didn't make DW
+%% Didn't make PW, and PW >= DW
+response(PutCore = #putcore{n = N, num_fail = NumFail, dw = DW, pw=PW, num_pw = NumPW}) when
+      NumFail > N - PW, PW >= DW ->
+    {{error, pw_val_unsatisfied, PW, NumPW}, PutCore};
+%% Didn't make DW and DW > PW
 response(PutCore = #putcore{n = N, num_fail = NumFail, dw = DW, num_dw = NumDW}) when
       NumFail > N - DW ->
     {{error, dw_val_unsatisfied, DW, NumDW}, PutCore}.
+
 
 %% Get final value - if returnbody did not need the result it allows delaying
 %% running reconcile until after the client reply is sent.
@@ -248,6 +253,7 @@ enough_test_() ->
                     ?assertEqual(true, enough(#putcore{n=3, w=0, dw=0, pw=3, w_fail_threshold=4,
                                 dw_fail_threshold=4, pw_fail_threshold=1, num_w=3,
                                 num_dw=3, num_pw=2, num_fail=0})),
+
                 ok
         end}
     ].
@@ -270,18 +276,28 @@ response_test_() ->
                         response(#putcore{n=3, w=0, dw=3, pw=0, w_fail_threshold=4,
                                 dw_fail_threshold=1, pw_fail_threshold=4, num_w=3,
                                 num_dw=2, num_pw=0, num_fail=1})),
+                    %% can never satify PW or DW and PW >= DW
+                    ?assertMatch({{error, dw_val_unsatisfied, 3, 2}, _},
+                        response(#putcore{n=3, w=0, dw=3, pw=2, w_fail_threshold=4,
+                                dw_fail_threshold=1, pw_fail_threshold=2, num_w=3,
+                                num_dw=2, num_pw=1, num_fail=1})),
                     ok
             end},
         {"PW val unsatisfied",
             fun() ->
                     ?assertMatch({{error, pw_val_unsatisfied, 3, 2}, _},
                         response(#putcore{n=3, w=0, dw=0, pw=3, w_fail_threshold=4,
-                                dw_fail_threshold=1, pw_fail_threshold=4, num_w=3,
+                                dw_fail_threshold=4, pw_fail_threshold=1, num_w=3,
                                 num_dw=2, num_pw=2, num_fail=1})),
                     ?assertMatch({{error, pw_val_unsatisfied, 3, 1}, _},
                         response(#putcore{n=3, w=0, dw=0, pw=3, w_fail_threshold=4,
-                                dw_fail_threshold=1, pw_fail_threshold=4, num_w=3,
+                                dw_fail_threshold=4, pw_fail_threshold=1, num_w=3,
                                 num_dw=3, num_pw=1, num_fail=0})),
+                    %% can never satify PW or DW and PW >= DW
+                    ?assertMatch({{error, pw_val_unsatisfied, 3, 2}, _},
+                        response(#putcore{n=3, w=0, dw=3, pw=3, w_fail_threshold=4,
+                                dw_fail_threshold=1, pw_fail_threshold=1, num_w=3,
+                                num_dw=2, num_pw=2, num_fail=1})),
                     ok
             end}
 

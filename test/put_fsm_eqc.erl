@@ -295,8 +295,10 @@ prop_basic_put() ->
 
         N = length(VPutResp),
         {PW, RealPW} = pw_val(N, 1000000, PWSeed),
-        {DW, RealDW}  = w_dw_val(N, RealPW, DWSeed),
-        {W, RealW0} = w_dw_val(N, RealDW, WSeed),
+        %% DW is always at least 1 because of coordinating puts
+        {DW, RealDW}  = w_dw_val(N, 1, DWSeed),
+        %% W can be 0
+        {W, RealW0} = w_dw_val(N, 0, WSeed),
 
         %% {Q, _Ring, NodeStatus} = fsm_eqc_util:mock_ring(N + NQdiff, NodeStatus0), 
 
@@ -655,7 +657,6 @@ expect_object([{dw,Idx,Obj, _} | H], W, DW,  PW, AllowMult, PL, NumW, NumDW, Num
     POK = primacy(Idx, PL),
     case NumW >= W andalso NumDW +1 >= DW andalso NumPW+POK >= PW of
         true ->
-            io:format("reconcile object for index ~p~n", [Idx]),
             riak_object:reconcile([Obj | Objs], AllowMult);
         false ->
             expect_object(H, W, DW, PW, AllowMult, PL, NumW, NumDW + 1,
@@ -737,30 +738,23 @@ filter_timeouts(H) ->
                     (_) -> true
                  end, H).
 
-enough_replies({_H, N, W, DW, PW, NumW, NumDW, NumPW, NumFail, _RObj, _Precommit, _PL}=S) ->
-    MaxWFails =  N - W,
-    MaxDWFails =  N - DW,
-    MaxPWFails = N - PW,
-    io:format(user, "N ~p, W ~p, DW ~p, PW ~p, NumW ~p, NumDW ~p, NumPW ~p,"
-        "NumFail ~p, MaxWFails ~p, MaxDWFails ~p, MaxPWFails ~p~n",
-        [N, W, DW, PW, NumW, NumDW, NumPW, NumFail, MaxWFails, MaxDWFails,
-            MaxPWFails]),
-
-    enough(S).
-
 %% All quorum satisfied
-enough({_H, _N, W, DW, PW, NumW, NumDW, NumPW, _NumFail, _RObj, _Precommit, _PL}) when
+enough_replies({_H, _N, W, DW, PW, NumW, NumDW, NumPW, _NumFail, _RObj, _Precommit, _PL}) when
       NumW >= W, NumDW >= DW, NumPW >= PW ->
     {true, ok};
+%% Too many failures to reach PW & PW >= DW
+enough_replies({_H, N, _W, DW, PW, _NumW, _NumDW, NumPW, NumFail, _RObj, _Precommit, _PL}) when
+      NumFail > N - PW, PW >= DW ->
+    {true, {error, pw_val_unsatisfied, PW, NumPW}};
 %% Too many failures to reach DW
-enough({_H, N, _W, DW, _PW, _NumW, NumDW, _NumPW, NumFail, _RObj, _Precommit, _PL}) when
+enough_replies({_H, N, _W, DW, _PW, _NumW, NumDW, _NumPW, NumFail, _RObj, _Precommit, _PL}) when
       NumFail > N - DW ->
     {true, {error, dw_val_unsatisfied, DW, NumDW}};
 %% Got N responses, but not PW
-enough({_H, N, _W, _DW, PW, _NumW, NumDW, NumPW, NumFail, _RObj, _Precommit, _PL}) when
+enough_replies({_H, N, _W, _DW, PW, _NumW, NumDW, NumPW, NumFail, _RObj, _Precommit, _PL}) when
       NumFail + NumDW >= N, NumPW < PW ->
     {true, {error, pw_val_unsatisfied, PW, NumPW}};
-enough(_) ->
+enough_replies(_) ->
     false.
 
     %% if

@@ -285,7 +285,6 @@ validate(timeout, StateData0 = #state{from = {raw, ReqId, _Pid},
     NumVnodes = length(Preflist2),
     MinVnodes = erlang:max(1, erlang:max(W, erlang:max(DW, PW))), % always need at least one vnode
 
-    io:format(user, "DW1: ~p DW: ~p N: ~p W: ~p~n", [DW1, DW, N, W]),
     if
         PW =:= error ->
             process_reply({error, {pw_val_violation, PW0}}, StateData0);
@@ -313,13 +312,9 @@ validate(timeout, StateData0 = #state{from = {raw, ReqId, _Pid},
                 if Disable -> [];
                    true -> get_hooks(postcommit, BucketProps)
                 end,
-            %% PW is the most restrivtive quorom, promote DW if it is lower than PW
-            %% W is the least restrictive quorom, promote to DW if that is larger
-            PromotedDW = erlang:max(DW, PW),
-            PromotedW = erlang:max(W, DW),
             StateData1 = StateData0#state{n=N,
-                                          w=PromotedW,
-                                          pw=PW, dw=PromotedDW, allowmult=AllowMult,
+                                          w=W,
+                                          pw=PW, dw=DW, allowmult=AllowMult,
                                           precommit = Precommit,
                                           postcommit = Postcommit,
                                           req_id = ReqId,
@@ -389,7 +384,6 @@ waiting_local_vnode(request_timeout, StateData) ->
     ?DTRACE(?C_PUT_FSM_WAITING_LOCAL_VNODE, [-1], []),
     process_reply({error,timeout}, StateData);
 waiting_local_vnode(Result, StateData = #state{putcore = PutCore}) ->
-    io:format("Adding result ~p~n", [Result]),
     UpdPutCore1 = riak_kv_put_core:add_result(Result, PutCore),
     case Result of
         {fail, Idx, _ReqId} ->
@@ -450,14 +444,11 @@ waiting_remote_vnode(Result, StateData = #state{putcore = PutCore}) ->
     IdxStr = integer_to_list(riak_kv_put_core:result_idx(Result)),
     ?DTRACE(?C_PUT_FSM_WAITING_REMOTE_VNODE, [ShortCode], [IdxStr]),
     UpdPutCore1 = riak_kv_put_core:add_result(Result, PutCore),
-    io:format("adding result ~p~n", [Result]),
     case riak_kv_put_core:enough(UpdPutCore1) of
         true ->
-            io:format("got enough~n"),
             {Reply, UpdPutCore2} = riak_kv_put_core:response(UpdPutCore1),
             process_reply(Reply, StateData#state{putcore = UpdPutCore2});
         false ->
-            io:format("not enough~n"),
             {next_state, waiting_remote_vnode, StateData#state{putcore = UpdPutCore1}}
     end.
 
