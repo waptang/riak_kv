@@ -757,28 +757,6 @@ enough_replies({_H, N, _W, _DW, PW, _NumW, NumDW, NumPW, NumFail, _RObj, _Precom
 enough_replies(_) ->
     false.
 
-    %% if
-
-    %%     %% All quora met
-    %%     NumW >= W andalso NumDW >= DW andalso NumPW >= PW->
-    %%         {true, ok};
-
-    %%     %% W met, but enough failures that DW can never be met
-    %%     NumW >= W andalso NumFail > MaxDWFails ->
-    %%         {true, {error, dw_val_unsatisfied, DW, NumDW}};
-
-    %%     NumW < W andalso NumFail > MaxWFails ->
-    %%         {true, {error, w_val_unsatisfied, W, NumW}};
-
-    %%     NumW >= W andalso NumFail > MaxPWFails ->
-    %%         {true, {error, pw_val_unsatisfied, PW, NumPW}};
-
-    %%     NumW >= W andalso NumFail + NumDW >= N andalso NumPW < PW ->
-    %%         {true, {error, pw_val_unsatisfied, PW, NumPW}};
-    %%     true ->
-    %%         false
-%%    end.
- 
 maybe_add_robj(ok, RObj, Precommit, Options) ->
     case precommit_should_fail(Precommit, Options) of
         {true, Expect} ->
