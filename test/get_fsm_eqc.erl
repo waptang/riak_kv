@@ -1,4 +1,4 @@
--module(get_fsm_qc).
+-module(get_fsm_eqc).
 
 -ifdef(EQC).
 -include_lib("eqc/include/eqc.hrl").
@@ -47,7 +47,7 @@ eqc_test_() ->
        fun cleanup/1,
        [%% Run the quickcheck tests
         {timeout, 60000, % do not trust the docs - timeout is in msec
-         ?_assertEqual(true, quickcheck(numtests(500, ?QC_OUT(prop_basic_get()))))}
+         ?_assertEqual(true, eqc:quickcheck(eqc:testing_time(50, ?QC_OUT(prop_basic_get()))))}
        ]
       }
      ]

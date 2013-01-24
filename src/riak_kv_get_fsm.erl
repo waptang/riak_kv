@@ -421,7 +421,7 @@ determine_do_read_repair(SoftCap, HardCap, Actual, Roll) ->
 
 -ifdef(TEST).
 roll_d100() ->
-    fsm_eqc_util:get_fake_rng(get_fsm_qc).
+    fsm_eqc_util:get_fake_rng(get_fsm_eqc).
 -else.
 % technically not a d100 as it has a 0
 roll_d100() ->

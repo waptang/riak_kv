@@ -81,7 +81,7 @@ eqc_test_() ->
                                                             []}, 5)),
         %% Run the quickcheck tests
         {timeout, 60000, % do not trust the docs - timeout is in msec
-         ?_assertEqual(true, quickcheck(numtests(100, ?QC_OUT(prop_basic_put()))))}
+         ?_assertEqual(true, eqc:quickcheck(eqc:testing_time(50, ?QC_OUT(prop_basic_put()))))}
        ]
       }
      ]

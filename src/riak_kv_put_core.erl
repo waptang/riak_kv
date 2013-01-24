@@ -24,6 +24,10 @@
          final/1, result_shortcode/1, result_idx/1]).
 -export_type([putcore/0, result/0, reply/0]).
 
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-endif.
+
 -type vput_result() :: any().
 
 -type result() :: w |
@@ -74,20 +78,6 @@ init(N, W, PW, DW, WFailThreshold, PWFailThreshold,
              returnbody = ReturnBody,
              idx_type = IdxType}.
 
-%% @private If the Idx is not in the IdxType
-%% the world should end
-is_primary_response(Idx, IdxType) ->
-    {ok, Status} = orddict:find(Idx, IdxType),
-    Status == primary.
-
-num_pw(PutCore = #putcore{num_pw=NumPW, idx_type=IdxType}, Idx) ->
-    case is_primary_response(Idx, IdxType) of
-        true ->
-            PutCore#putcore{num_pw=NumPW+1};
-        false ->
-            PutCore
-    end.
-
 %% Add a result from the vnode
 -spec add_result(vput_result(), putcore()) -> putcore().
 add_result({w, Idx, _ReqId}, PutCore = #putcore{results = Results,
@@ -124,19 +114,11 @@ enough(#putcore{ num_fail = NumFail, pw_fail_threshold = PWFailThreshold}) when
 enough(#putcore{ num_fail = NumFail, dw_fail_threshold = DWFailThreshold}) when
       NumFail >= DWFailThreshold ->
     true;
-%% Can't even make sloppy W quorom
-%% enough(#putcore{ w = W, num_w = NumW, num_fail = NumFail, w_fail_threshold = WFailThreshold}) when
-%%       NumW < W, NumFail >= WFailThreshold ->
-    %% true;
 %% We've received all DW responses but can't satisfy PW
 enough(#putcore{n = N, num_dw = NumDW, num_fail = NumFail, pw = PW, num_pw = NumPW}) when
       NumDW + NumFail >= N, NumPW < PW ->
     true;
 enough(_PutCore) ->
-    #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = PW, num_pw =
-        NumPW, num_fail = NumFail} = _PutCore,
-    io:format(user," W ~p, NumW ~p, DW ~p. NumDW ~p, PW ~p, NumPW ~p, NumFail ~p~n",
-        [W, NumW, DW, NumDW, PW, NumPW, NumFail]),
     false.
 
 %% Get success/fail response once enough results received
@@ -152,10 +134,7 @@ response(PutCore = #putcore{w = W, num_w = NumW, dw = DW, num_dw = NumDW, pw = P
 %% Didn't make DW
 response(PutCore = #putcore{n = N, num_fail = NumFail, dw = DW, num_dw = NumDW}) when
       NumFail > N - DW ->
-    {{error, dw_val_unsatisfied, DW, NumDW}, PutCore};
-%% Didn't even make quorom
-response(PutCore = #putcore{w = W, num_w = NumW}) ->
-    {{error, w_val_unsatisfied, W, NumW}, PutCore}.
+    {{error, dw_val_unsatisfied, DW, NumDW}, PutCore}.
 
 %% Get final value - if returnbody did not need the result it allows delaying
 %% running reconcile until after the client reply is sent.
@@ -195,3 +174,117 @@ maybe_return_body(PutCore = #putcore{returnbody = true}) ->
     {ReplyObj, UpdPutCore} = final(PutCore),
     {{ok, ReplyObj}, UpdPutCore}.
 
+%% @private If the Idx is not in the IdxType
+%% the world should end
+is_primary_response(Idx, IdxType) ->
+    {ok, Status} = orddict:find(Idx, IdxType),
+    Status == primary.
+
+%% @private Increment PW, if appropriate
+num_pw(PutCore = #putcore{num_pw=NumPW, idx_type=IdxType}, Idx) ->
+    case is_primary_response(Idx, IdxType) of
+        true ->
+            PutCore#putcore{num_pw=NumPW+1};
+        false ->
+            PutCore
+    end.
+
+
+
+-ifdef(TEST).
+%% simple sanity tests
+enough_test_() ->
+    [
+        {"Checking W",
+            fun() ->
+                    %% you can never fail W directly...
+                    ?assertEqual(false, enough(#putcore{n=3, w=3, dw=0, pw=0, w_fail_threshold=1,
+                                dw_fail_threshold=4, pw_fail_threshold=4, num_w=1,
+                                num_dw=0, num_pw=0, num_fail=0})),
+                    ?assertEqual(false, enough(#putcore{n=3, w=3, dw=0, pw=0, w_fail_threshold=1,
+                                dw_fail_threshold=4, pw_fail_threshold=4, num_w=2,
+                                num_dw=0, num_pw=0, num_fail=0})),
+                    %% got enough Ws
+                    ?assertEqual(true, enough(#putcore{n=3, w=3, dw=0, pw=0, w_fail_threshold=1,
+                                dw_fail_threshold=4, pw_fail_threshold=4, num_w=3,
+                                num_dw=0, num_pw=0, num_fail=0})),
+                ok
+        end},
+        {"Checking DW",
+            fun() ->
+                    ?assertEqual(false, enough(#putcore{n=3, w=0, dw=3, pw=0, w_fail_threshold=4,
+                                dw_fail_threshold=1, pw_fail_threshold=4, num_w=3,
+                                num_dw=1, num_pw=0, num_fail=0})),
+                    ?assertEqual(false, enough(#putcore{n=3, w=0, dw=3, pw=0, w_fail_threshold=4,
+                                dw_fail_threshold=1, pw_fail_threshold=4, num_w=3,
+                                num_dw=2, num_pw=0, num_fail=0})),
+                    %% got enough DWs
+                    ?assertEqual(true, enough(#putcore{n=3, w=0, dw=3, pw=0, w_fail_threshold=4,
+                                dw_fail_threshold=1, pw_fail_threshold=4, num_w=3,
+                                num_dw=3, num_pw=0, num_fail=0})),
+                    %% exceeded failure threshold
+                    ?assertEqual(true, enough(#putcore{n=3, w=0, dw=3, pw=0, w_fail_threshold=4,
+                                dw_fail_threshold=1, pw_fail_threshold=4, num_w=3,
+                                num_dw=2, num_pw=0, num_fail=1})),
+                ok
+        end},
+        {"Checking PW",
+            fun() ->
+                    ?assertEqual(false, enough(#putcore{n=3, w=0, dw=0, pw=3, w_fail_threshold=4,
+                                dw_fail_threshold=4, pw_fail_threshold=1, num_w=3,
+                                num_dw=1, num_pw=1, num_fail=0})),
+                    ?assertEqual(false, enough(#putcore{n=3, w=0, dw=0, pw=3, w_fail_threshold=4,
+                                dw_fail_threshold=4, pw_fail_threshold=1, num_w=3,
+                                num_dw=2, num_pw=2, num_fail=0})),
+                    %% got enough PWs
+                    ?assertEqual(true, enough(#putcore{n=3, w=0, dw=0, pw=3, w_fail_threshold=4,
+                                dw_fail_threshold=4, pw_fail_threshold=1, num_w=3,
+                                num_dw=3, num_pw=3, num_fail=0})),
+                    %% exceeded failure threshold
+                    ?assertEqual(true, enough(#putcore{n=3, w=0, dw=0, pw=3, w_fail_threshold=4,
+                                dw_fail_threshold=4, pw_fail_threshold=1, num_w=3,
+                                num_dw=2, num_pw=2, num_fail=1})),
+                    %% can never satisfy PW
+                    ?assertEqual(true, enough(#putcore{n=3, w=0, dw=0, pw=3, w_fail_threshold=4,
+                                dw_fail_threshold=4, pw_fail_threshold=1, num_w=3,
+                                num_dw=3, num_pw=2, num_fail=0})),
+                ok
+        end}
+    ].
+
+response_test_() ->
+    [
+        {"Requirements met",
+            fun() ->
+                    ?assertMatch({ok, _},
+                        response(#putcore{n=3, w=1, dw=3, pw=2,
+                                w_fail_threshold=3,
+                                dw_fail_threshold=1, pw_fail_threshold=2, num_w=3,
+                                num_dw=3, num_pw=2, num_fail=0,
+                                returnbody=false})),
+                    ok
+            end},
+        {"DW val unsatisfied",
+            fun() ->
+                    ?assertMatch({{error, dw_val_unsatisfied, 3, 2}, _},
+                        response(#putcore{n=3, w=0, dw=3, pw=0, w_fail_threshold=4,
+                                dw_fail_threshold=1, pw_fail_threshold=4, num_w=3,
+                                num_dw=2, num_pw=0, num_fail=1})),
+                    ok
+            end},
+        {"PW val unsatisfied",
+            fun() ->
+                    ?assertMatch({{error, pw_val_unsatisfied, 3, 2}, _},
+                        response(#putcore{n=3, w=0, dw=0, pw=3, w_fail_threshold=4,
+                                dw_fail_threshold=1, pw_fail_threshold=4, num_w=3,
+                                num_dw=2, num_pw=2, num_fail=1})),
+                    ?assertMatch({{error, pw_val_unsatisfied, 3, 1}, _},
+                        response(#putcore{n=3, w=0, dw=0, pw=3, w_fail_threshold=4,
+                                dw_fail_threshold=1, pw_fail_threshold=4, num_w=3,
+                                num_dw=3, num_pw=1, num_fail=0})),
+                    ok
+            end}
+
+    ].
+
+-endif.
