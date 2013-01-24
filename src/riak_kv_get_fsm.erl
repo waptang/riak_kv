@@ -67,7 +67,7 @@
                 startnow :: {non_neg_integer(), non_neg_integer(), non_neg_integer()},
                 get_usecs :: non_neg_integer(),
                 tracked_bucket=false :: boolean(), %% is per bucket stats enabled for this bucket
-                idx_type :: orddict:orddict(), %% mapping of index to partition type (primary | fallback)
+                idx_type :: {non_neg_integer(), 'primary' | 'fallback'}, %% mapping of index to partition type (primary | fallback)
                 timing = [] :: [{atom(), erlang:timestamp()}],
                 calculated_timings :: {ResponseUSecs::non_neg_integer(),
                                        [{StateName::atom(), TimeUSecs::non_neg_integer()}]} | undefined
@@ -186,10 +186,7 @@ validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
     PR = riak_kv_util:expand_rw_value(pr, PR0, BucketProps, N),
     NumVnodes = length(PL2),
     NumPrimaries = length([x || {_,primary} <- PL2]),
-    IdxType = lists:foldl(fun({{Part, _Node}, Type}, Acc) ->
-                                  orddict:store(Part, Type, Acc) end,
-                          orddict:new(),
-                          PL2),
+    IdxType = [{Part, Type} || {{Part, _Node}, Type} <- PL2],
 
     case validate_quorum(R, R0, N, PR, PR0, NumPrimaries, NumVnodes) of
         ok ->
@@ -286,7 +283,7 @@ waiting_vnode_r(request_timeout, StateData) ->
 %% @private If the Idx is not in the IdxType
 %% the world should end
 get_response_owner_status(Idx, IdxType) ->
-    {ok, Status} = orddict:find(Idx, IdxType),
+    {Idx, Status} = lists:keyfind(Idx, 1, IdxType),
     Status.
 
 %% @private

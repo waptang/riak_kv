@@ -277,10 +277,8 @@ validate(timeout, StateData0 = #state{from = {raw, ReqId, _Pid},
             %% The coord vnode is responsible for incrementing the vclock
             DW = erlang:max(DW1, 1)
     end,
-    IdxType = lists:foldl(fun({{Part, _Node}, Type}, Acc) ->
-                                  orddict:store(Part, Type, Acc) end,
-                          orddict:new(),
-                          Preflist2),
+
+    IdxType = [{Part, Type} || {{Part, _Node}, Type} <- Preflist2],
     NumPrimaries = length([x || {_,primary} <- Preflist2]),
     NumVnodes = length(Preflist2),
     MinVnodes = erlang:max(1, erlang:max(W, erlang:max(DW, PW))), % always need at least one vnode

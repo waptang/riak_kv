@@ -55,7 +55,7 @@
                   num_dw = 0 :: non_neg_integer(),
                   num_pw = 0 :: non_neg_integer(),
                   num_fail = 0 :: non_neg_integer(),
-                  idx_type :: orddict:orddict() %% mapping of idx -> primary | fallback
+                  idx_type :: {non_neg_integer(), 'primary' | 'fallback'} %% mapping of idx -> primary | fallback
                  }).
 -opaque putcore() :: #putcore{}.
 
@@ -182,7 +182,7 @@ maybe_return_body(PutCore = #putcore{returnbody = true}) ->
 %% @private If the Idx is not in the IdxType
 %% the world should end
 is_primary_response(Idx, IdxType) ->
-    {ok, Status} = orddict:find(Idx, IdxType),
+    {Idx, Status} = lists:keyfind(Idx, 1, IdxType),
     Status == primary.
 
 %% @private Increment PW, if appropriate
