@@ -181,7 +181,7 @@ status([]) ->
             error
     end.
 
--spec(vnode_status([]) -> ok).
+-spec vnode_status([]) -> ok | error.
 vnode_status([]) ->
     try
         case riak_kv_status:vnode_status() of

@@ -43,7 +43,7 @@ transfers() ->
     riak_core_status:transfers().
 
 %% @doc Get status information about the node local vnodes.
--spec vnode_status() -> [{atom(), term()}].
+-spec vnode_status() -> [{partition(), list(tuple())}].
 vnode_status() ->
     %% Get the kv vnode indexes and the associated pids for the node.
     PrefLists = riak_core_vnode_manager:all_index_pid(riak_kv_vnode),
