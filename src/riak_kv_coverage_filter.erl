@@ -54,7 +54,7 @@
 %% module. The list of tuples is composed into a function that is
 %% used to determine if an item should be included in the final 
 %% result set.
--spec build_filter(bucket(), filter(), [index()]) -> filter().
+-spec build_filter(bucket() | all, filter(), [index()]|undefined) -> filter().
 build_filter(Bucket, ItemFilterInput, FilterVNode) ->
     ItemFilter = build_item_filter(ItemFilterInput),
 

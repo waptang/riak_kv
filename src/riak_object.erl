@@ -344,7 +344,7 @@ index_specs(Obj) ->
 %% indexes with the indexes specified in the object passed as the
 %% second parameter. If there are siblings only the unique new
 %% indexes are added.
--spec diff_index_specs(riak_object(), riak_object()) ->
+-spec diff_index_specs(riak_object()|undefined, riak_object()) ->
                               [{index_op(), binary(), index_value()}].
 diff_index_specs(Obj, OldObj) ->
     OldIndexes = index_data(OldObj),
