@@ -35,7 +35,7 @@
 -type from() :: {atom(), req_id(), pid()}.
 -type req_id() :: non_neg_integer().
 
--record(state, {buckets=sets:new() :: [term()],
+-record(state, {buckets=sets:new() :: set(),
                 from :: from()}).
 
 -include("riak_kv_dtrace.hrl").
