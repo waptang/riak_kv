@@ -71,6 +71,7 @@
 
 -type r_object_bin() :: binary().
 -type r_content_bin() :: binary().
+-type r_object_vsn() :: v0 | v1.
 %% -type rfc1123_date() :: string(). % LastMod Date
 
 -define(LASTMOD_LEN, 29). %% static length of rfc1123_date() type. Hard-coded in Erlang.
@@ -88,18 +89,28 @@
 -export([to_json/1, from_json/1]).
 -export([index_specs/1, diff_index_specs/2]).
 -export([set_contents/2, set_vclock/2]). %% INTERNAL, only for riak_*
--export([robj_to_binary/1, binary_to_robj/3]).
+-export([to_binary/2, from_binary/3, to_binary_version/4]).
 
 %% @doc Convert riak object to binary form
--spec robj_to_binary(#r_object{}) -> r_object_bin().
-robj_to_binary(#r_object{contents=Contents, vclock=VClock}) ->
+-spec to_binary(r_object_vsn(), #r_object{}) -> r_object_bin().
+to_binary(v0, RObj) ->
+    term_to_binary(RObj);
+to_binary(v1, #r_object{contents=Contents, vclock=VClock}) ->
     new_v1(VClock, Contents).
 
+-spec to_binary_version(r_object_vsn(), bucket(), key(), r_object_bin()) -> r_object_bin().
+to_binary_version(v0, _, _, <<131,_/binary>>=Bin) ->
+    Bin;
+to_binary_version(v1, _, _, <<?MAGIC:8/integer, 1:8/integer, _/binary>>=Bin) ->
+    Bin;
+to_binary_version(Vsn, B, K, Bin) ->
+    to_binary(Vsn, from_binary(B, K, Bin)).
+
 %% @doc Convert binary object to riak object
--spec binary_to_robj(bucket(),key(),binary()) -> #r_object{} | {error, atom()}.
-binary_to_robj(_B,_K,<<131, _Rest/binary>>=ObjTerm) ->
+-spec from_binary(bucket(),key(),binary()) -> #r_object{} | {error, atom()}.
+from_binary(_B,_K,<<131, _Rest/binary>>=ObjTerm) ->
     binary_to_term(ObjTerm);
-binary_to_robj(B,K,<<?MAGIC:8/integer, 1:8/integer, Rest/binary>>=_ObjBin) ->
+from_binary(B,K,<<?MAGIC:8/integer, 1:8/integer, Rest/binary>>=_ObjBin) ->
     %% Version 1 of binary riak object
     case Rest of
         <<VclockLen:32/integer, VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> ->
@@ -109,7 +120,7 @@ binary_to_robj(B,K,<<?MAGIC:8/integer, 1:8/integer, Rest/binary>>=_ObjBin) ->
         _Other ->
             {error, bad_object_format}
     end;
-binary_to_robj(_B, _K, <<?MAGIC, _Ver, _Rest/binary>>=_ObjBin) ->
+from_binary(_B, _K, <<?MAGIC, _Ver, _Rest/binary>>=_ObjBin) ->
     {error, unknown_version}.
 
 sibs_of_binary(Count,SibsBin) ->
