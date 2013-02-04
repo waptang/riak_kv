@@ -102,10 +102,11 @@ insert(Id, Key, Hash, Tree) ->
 insert(Id, Key, Hash, Tree, Options) ->
     gen_server:cast(Tree, {insert, Id, Key, Hash, Options}).
 
-%% @doc Add a term_to_binary encoded riak_object associated with a given
+%% @doc Add a encoded (binary) riak_object associated with a given
 %%      bucket/key to the appropriate hashtree managed by the provided
 %%      index_hashtree pid. The hash value is generated using
-%%      {@link hash_object/1}.
+%%      {@link hash_object/1}. Any encoding version is supported. The encoding
+%%      will be changed to the appropriate version before hashing the object.
 -spec insert_object({binary(), binary()}, riak_object_t2b(), pid()) -> ok.
 insert_object(BKey, RObj, Tree) ->
     gen_server:cast(Tree, {insert_object, BKey, RObj}).
@@ -285,7 +286,7 @@ handle_cast({insert, Id, Key, Hash, Options}, State) ->
 handle_cast({insert_object, BKey, RObj}, State) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     IndexN = riak_kv_util:get_index_n(BKey, Ring),
-    State2 = do_insert(IndexN, term_to_binary(BKey), hash_object(RObj), [], State),
+    State2 = do_insert(IndexN, term_to_binary(BKey), hash_object(BKey, RObj), [], State),
     {noreply, State2};
 handle_cast({delete, BKey}, State) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
@@ -363,13 +364,14 @@ load_built(#state{trees=Trees}) ->
     end.
 
 %% Generate a hash value for a binary-encoded `riak_object'
--spec hash_object(riak_object_t2b()) -> binary().
-hash_object(RObjBin) ->
+-spec hash_object({riak_object:bucket(), riak_object:key()}, riak_object_t2b()) -> binary().
+hash_object({Bucket, Key}, RObjBin) ->
     %% Normalize the `riak_object' vector clock before hashing
-    RObj = binary_to_term(RObjBin),
+    RObj = riak_object:from_binary(Bucket, Key, RObjBin),
     Vclock = riak_object:vclock(RObj),
     UpdObj = riak_object:set_vclock(RObj, lists:sort(Vclock)),
-    Hash = erlang:phash2(term_to_binary(UpdObj)),
+    ObjFmt = riak_core_capability:get({riak_kv, object_format}, v0),
+    Hash = erlang:phash2(riak_object:to_binary(ObjFmt, UpdObj)),
     term_to_binary(Hash).
 
 %% Fold over a given vnode's data, inserting each object into the appropriate
@@ -384,7 +386,7 @@ fold_keys(Partition, Tree) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     Req = ?FOLD_REQ{foldfun=fun(BKey={Bucket,Key}, RObj, _) ->
                                     IndexN = riak_kv_util:get_index_n({Bucket, Key}, Ring),
-                                    insert(IndexN, term_to_binary(BKey), hash_object(RObj),
+                                    insert(IndexN, term_to_binary(BKey), hash_object(BKey, RObj),
                                            Tree, [if_missing]),
                                     ok
                             end,
