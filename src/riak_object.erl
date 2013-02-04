@@ -191,8 +191,10 @@ fold_meta_to_bin(?MD_VTAG, Value, {{_Vt,Del,Lm},RestBin}) ->
     {{Value, Del, Lm}, RestBin};
 fold_meta_to_bin(?MD_LASTMOD, Value, {{Vt,Del,_Lm},RestBin}) ->
      {{Vt, Del, Value}, RestBin};
-fold_meta_to_bin(?MD_DELETED, true, {{Vt,_Del,Lm},RestBin}) ->
+fold_meta_to_bin(?MD_DELETED, true, {{Vt,_Del,Lm},RestBin})->
      {{Vt, <<1>>, Lm}, RestBin};
+fold_meta_to_bin(?MD_DELETED, "true", Acc) ->
+    fold_meta_to_bin(?MD_DELETED, true, Acc);
 fold_meta_to_bin(?MD_DELETED, _, {{Vt,_Del,Lm},RestBin}) ->
     {{Vt, <<0>>, Lm}, RestBin};
 fold_meta_to_bin(Key, Value, {{_Vt,_Del,_Lm}=Elems,RestBin}) ->
