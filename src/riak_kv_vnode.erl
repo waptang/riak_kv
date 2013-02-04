@@ -528,8 +528,8 @@ handoff_finished(_TargetNode, State) ->
 
 handle_handoff_data(BinObj, State) ->
     PBObj = riak_core_pb:decode_riakobject_pb(zlib:unzip(BinObj)),
-    BKey = {PBObj#riakobject_pb.bucket,PBObj#riakobject_pb.key},
-    case do_diffobj_put(BKey, binary_to_term(PBObj#riakobject_pb.val), State) of
+    {B, K} = BKey = {PBObj#riakobject_pb.bucket,PBObj#riakobject_pb.key},
+    case do_diffobj_put(BKey, riak_object:from_binary(B, K, PBObj#riakobject_pb.val), State) of
         {ok, UpdModState} ->
             {reply, ok, State#state{modstate=UpdModState}};
         {error, Reason, UpdModState} ->
@@ -539,8 +539,13 @@ handle_handoff_data(BinObj, State) ->
     end.
 
 encode_handoff_item({B, K}, V) ->
+    %% before sending data to another node change binary version
+    %% to one supported by the cluster. This way we don't send
+    %% unsupported formats to old nodes
+    ObjFmt = riak_core_capability:get({riak_kv, object_format}, v0),
+    Val = riak_object:to_binary_version(ObjFmt, B, K, V),
     zlib:zip(riak_core_pb:encode_riakobject_pb(
-               #riakobject_pb{bucket=B, key=K, val=V})).
+               #riakobject_pb{bucket=B, key=K, val=Val})).
 
 is_empty(State=#state{mod=Mod, modstate=ModState}) ->
     {Mod:is_empty(ModState), State}.
@@ -738,7 +743,8 @@ perform_put({true, Obj},
                      bkey={Bucket, Key},
                      reqid=ReqID,
                      index_specs=IndexSpecs}) ->
-    Val = riak_object:robj_to_binary(Obj),
+    ObjFmt = riak_core_capability:get({riak_kv, object_format}, v0),
+    Val = riak_object:to_binary(ObjFmt, Obj),
     case Mod:put(Bucket, Key, IndexSpecs, Val, ModState) of
         {ok, UpdModState} ->
             case RB of
@@ -1010,7 +1016,8 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                 false ->
                     IndexSpecs = []
             end,
-            Val = riak_object:robj_to_binary(DiffObj),
+            ObjFmt = riak_core_capability:get({riak_kv, object_format}, v0),
+            Val = riak_object:to_binary(ObjFmt, DiffObj),
             Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
             case Res of
                 {ok, _UpdModState} ->
@@ -1035,7 +1042,8 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                         false ->
                             IndexSpecs = []
                     end,
-                    Val = riak_object:robj_to_binary(AMObj),
+                    ObjFmt = riak_core_capability:get({riak_kv, object_format}, v0),
+                    Val = riak_object:to_binary(ObjFmt, AMObj),
                     Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
                     case Res of
                         {ok, _UpdModState} ->
@@ -1194,7 +1202,7 @@ object_info({Bucket, _Key}=BKey) ->
 object_from_binary({B,K}, ValBin) ->
     object_from_binary(B, K, ValBin).
 object_from_binary(B, K, ValBin) ->
-    case riak_object:binary_to_robj(B, K, ValBin) of
+    case riak_object:from_binary(B, K, ValBin) of
         {error, R} -> throw(R);
         Obj -> Obj
     end.

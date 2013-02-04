@@ -30,21 +30,29 @@
 
 -compile(export_all).
 
-riak_object_bin() ->
-    ?LET(Obj, 
-         fsm_eqc_util:riak_object(), 
-         {riak_object:bucket(Obj), 
-          riak_object:key(Obj),
-          riak_object:robj_to_binary(Obj)}).
-
 roundtrip_eqc_test_() ->
-    Res = eqc:quickcheck(numtests(1000, ?QC_OUT(prop_serialize_deserialize()))),
+    Res = eqc:quickcheck(numtests(1000, ?QC_OUT(prop_roundtrip()))),
     ?_assertEqual(true, Res).
 
-prop_serialize_deserialize() ->
-    ?FORALL({B,K,ObjBin}, 
+%% deserializing a binary representation of a riak_object and
+%% reserializing it for the same version should result in the same
+%% binary
+prop_roundtrip() ->
+    ?FORALL({B,K,ObjBin,BinVsn},
             riak_object_bin(),
-            ObjBin =:= riak_object:robj_to_binary(riak_object:binary_to_robj(B,K,ObjBin))).
+            collect(BinVsn,
+                      ObjBin =:=
+                          riak_object:to_binary(BinVsn, riak_object:from_binary(B,K,ObjBin)))).
 
+riak_object_bin() ->
+    ?LET({Obj, Vsn},
+         {fsm_eqc_util:riak_object(), binary_version()},
+         {riak_object:bucket(Obj),
+          riak_object:key(Obj),
+          riak_object:to_binary(Vsn, Obj),
+          Vsn}).
+
+binary_version() ->
+    oneof([v0, v1]).
 
 -endif. %% EQC
