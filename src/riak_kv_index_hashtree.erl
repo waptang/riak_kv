@@ -104,7 +104,7 @@ insert(Id, Key, Hash, Tree) ->
 insert(_Id, _Key, _Hash, undefined, _Options) ->
     ok;
 insert(Id, Key, Hash, Tree, Options) ->
-    catch gen_server:call(Tree, {insert, Id, Key, Hash, Options}, infinity).
+    gen_server:cast(Tree, {insert, Id, Key, Hash, Options}).
 
 %% @doc Add a term_to_binary encoded riak_object associated with a given
 %%      bucket/key to the appropriate hashtree managed by the provided
@@ -114,7 +114,7 @@ insert(Id, Key, Hash, Tree, Options) ->
 insert_object(_BKey, _RObj, undefined) ->
     ok;
 insert_object(BKey, RObj, Tree) ->
-    catch gen_server:call(Tree, {insert_object, BKey, RObj}, infinity).
+    gen_server:cast(Tree, {insert_object, BKey, RObj}).
 
 %% @doc Remove the key/hash pair associated with a given bucket/key from the
 %%      appropriate hashtree managed by the provided index_hashtree pid.
@@ -122,7 +122,7 @@ insert_object(BKey, RObj, Tree) ->
 delete(_BKey, undefined) ->
     ok;
 delete(BKey, Tree) ->
-    catch gen_server:call(Tree, {delete, BKey}, infinity).
+    gen_server:cast(Tree, {delete, BKey}).
 
 %% @doc Called by the entropy manager to finish the process used to acquire
 %%      remote vnode locks when starting an exchange. For more details,
@@ -229,20 +229,6 @@ handle_call({get_lock, Type, Pid}, _From, State) ->
     {Reply, State2} = do_get_lock(Type, Pid, State),
     {reply, Reply, State2};
 
-handle_call({insert, Id, Key, Hash, Options}, _From, State) ->
-    State2 = do_insert(Id, Key, Hash, Options, State),
-    {reply, ok, State2};
-handle_call({insert_object, BKey, RObj}, _From, State) ->
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    IndexN = riak_kv_util:get_index_n(BKey, Ring),
-    State2 = do_insert(IndexN, term_to_binary(BKey), hash_object(RObj), [], State),
-    {reply, ok, State2};
-handle_call({delete, BKey}, _From, State) ->
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    IndexN = riak_kv_util:get_index_n(BKey, Ring),
-    State2 = do_delete(IndexN, term_to_binary(BKey), State),
-    {reply, ok, State2};
-
 handle_call({update_tree, Id}, From, State) ->
     lager:debug("Updating tree: (vnode)=~p (preflist)=~p", [State#state.index, Id]),
     apply_tree(Id,
@@ -291,6 +277,20 @@ handle_cast(poke, State) ->
 handle_cast(stop, State) ->
     close_trees(State),
     {stop, normal, State};
+
+handle_cast({insert, Id, Key, Hash, Options}, State) ->
+    State2 = do_insert(Id, Key, Hash, Options, State),
+    {noreply, State2};
+handle_cast({insert_object, BKey, RObj}, State) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    IndexN = riak_kv_util:get_index_n(BKey, Ring),
+    State2 = do_insert(IndexN, term_to_binary(BKey), hash_object(RObj), [], State),
+    {noreply, State2};
+handle_cast({delete, BKey}, State) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    IndexN = riak_kv_util:get_index_n(BKey, Ring),
+    State2 = do_delete(IndexN, term_to_binary(BKey), State),
+    {noreply, State2};
 
 handle_cast(build_failed, State) ->
     riak_kv_entropy_manager:requeue_poke(State#state.index),
