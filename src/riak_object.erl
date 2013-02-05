@@ -29,7 +29,7 @@
 %% TODO: refactor to remove wm_raw into two files, one that we pull in.
 -include("riak_kv_wm_raw.hrl").
 
--export_type([riak_object/0, bucket/0, key/0, value/0]).
+-export_type([riak_object/0, bucket/0, key/0, value/0, binary_version/0]).
 
 -type key() :: binary().
 -type bucket() :: binary().
@@ -71,7 +71,7 @@
 
 -type r_object_bin() :: binary().
 -type r_content_bin() :: binary().
--type r_object_vsn() :: v0 | v1.
+-type binary_version() :: v0 | v1.
 %% -type rfc1123_date() :: string(). % LastMod Date
 
 -define(LASTMOD_LEN, 29). %% static length of rfc1123_date() type. Hard-coded in Erlang.
@@ -92,13 +92,13 @@
 -export([to_binary/2, from_binary/3, to_binary_version/4]).
 
 %% @doc Convert riak object to binary form
--spec to_binary(r_object_vsn(), #r_object{}) -> r_object_bin().
+-spec to_binary(binary_version(), #r_object{}) -> r_object_bin().
 to_binary(v0, RObj) ->
     term_to_binary(RObj);
 to_binary(v1, #r_object{contents=Contents, vclock=VClock}) ->
     new_v1(VClock, Contents).
 
--spec to_binary_version(r_object_vsn(), bucket(), key(), r_object_bin()) -> r_object_bin().
+-spec to_binary_version(binary_version(), bucket(), key(), r_object_bin()) -> r_object_bin().
 to_binary_version(v0, _, _, <<131,_/binary>>=Bin) ->
     Bin;
 to_binary_version(v1, _, _, <<?MAGIC:8/integer, 1:8/integer, _/binary>>=Bin) ->
