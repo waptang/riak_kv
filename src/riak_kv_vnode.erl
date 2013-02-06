@@ -45,7 +45,8 @@
          repair_status/1,
          repair_filter/1,
          hashtree_pid/1,
-         request_hashtree_pid/1]).
+         request_hashtree_pid/1,
+         reformat_object/2]).
 
 %% riak_core_vnode API
 -export([init/1,
@@ -301,6 +302,14 @@ request_hashtree_pid(Partition) ->
                                    {raw, ReqId, self()},
                                    riak_kv_vnode_master).
 
+
+-spec reformat_object(index(), {riak_object:bucket(), riak_object:key()}) ->
+                             ok | {error, term()}.
+reformat_object(Partition, BKey) ->
+    riak_core_vnode_master:sync_spawn_command({Partition, node()},
+                                              {reformat_object, BKey},
+                                              riak_kv_vnode_master).
+
 %% VNode callbacks
 
 init([Index]) ->
@@ -486,7 +495,10 @@ handle_command(?KV_VNODE_STATUS_REQ{},
                             modstate=ModState}) ->
     BackendStatus = {backend_status, Mod, Mod:status(ModState)},
     VNodeStatus = [BackendStatus],
-    {reply, {vnode_status, Index, VNodeStatus}, State}.
+    {reply, {vnode_status, Index, VNodeStatus}, State};
+handle_command({reformat_object, BKey}, _Sender, State) ->
+    {Reply, UpdState} = do_reformat(BKey, State),
+    {reply, Reply, UpdState}.
 
 %% @doc Handle a coverage request.
 %% More information about the specification for the ItemFilter
@@ -881,6 +893,37 @@ perform_put({true, Obj},
             Reply = {fail, Idx, ReqID}
     end,
     {Reply, State#state{modstate=UpdModState}}.
+
+do_reformat({Bucket, Key}=BKey, State=#state{mod=Mod, modstate=ModState}) ->
+    case Mod:get(Bucket, Key, ModState) of
+        {error, not_found, _UpdModState} ->
+            Reply = {error, not_found},
+            UpdState = State;
+        {ok, ObjBin, _UpdModState} ->
+            %% since it is assumed capabilities have been properly set
+            %% to the desired version, to reformat, all we need to do
+            %% is submit a new write
+            RObj = riak_object:from_binary(Bucket, Key, ObjBin),
+            {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
+            IndexBackend = lists:member(indexes, Capabilities),
+            case IndexBackend of
+                true ->
+                    IndexSpecs = riak_object:index_specs(RObj);
+                false ->
+                    IndexSpecs = []
+            end,
+            PutArgs = #putargs{returnbody=false,
+                               bkey=BKey,
+                               reqid=undefined,
+                               index_specs=IndexSpecs},
+            case perform_put({true, RObj}, State, PutArgs) of
+                {{fail, _, _}, UpdState}  ->
+                    Reply = {error, backend_error};
+                {_, UpdState} ->
+                    Reply = ok
+            end
+    end,
+    {Reply, UpdState}.
 
 %% @private
 %% enforce allow_mult bucket property so that no backend ever stores
