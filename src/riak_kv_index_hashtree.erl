@@ -370,8 +370,7 @@ hash_object({Bucket, Key}, RObjBin) ->
     RObj = riak_object:from_binary(Bucket, Key, RObjBin),
     Vclock = riak_object:vclock(RObj),
     UpdObj = riak_object:set_vclock(RObj, lists:sort(Vclock)),
-    ObjFmt = riak_core_capability:get({riak_kv, object_format}, v0),
-    Hash = erlang:phash2(riak_object:to_binary(ObjFmt, UpdObj)),
+    Hash = riak_object:hash(UpdObj),
     term_to_binary(Hash).
 
 %% Fold over a given vnode's data, inserting each object into the appropriate
