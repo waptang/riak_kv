@@ -583,7 +583,7 @@ binary_version(<<131,_/binary>>) -> v0;
 binary_version(<<?MAGIC:8/integer, 1:8/integer, _/binary>>) -> v1.
 
 %% @doc Convert binary object to riak object
--spec from_binary(bucket(),key(),binary()) -> #r_object{} | {error, atom()}.
+-spec from_binary(bucket(),key(),binary()) -> riak_object().
 from_binary(_B,_K,<<131, _Rest/binary>>=ObjTerm) ->
     binary_to_term(ObjTerm);
 from_binary(B,K,<<?MAGIC:8/integer, 1:8/integer, Rest/binary>>=_ObjBin) ->
@@ -595,16 +595,15 @@ from_binary(B,K,<<?MAGIC:8/integer, 1:8/integer, Rest/binary>>=_ObjBin) ->
             #r_object{bucket=B,key=K,contents=Contents,vclock=Vclock};
         _Other ->
             {error, bad_object_format}
-    end;
-from_binary(_B, _K, <<?MAGIC, _Ver, _Rest/binary>>=_ObjBin) ->
-    {error, unknown_version}.
+    end.
 
 %% @doc Get an approximation of object size by adding together the bucket, key,
 %% vectorclock, and all of the siblings. This is more complex than
 %% calling term_to_binary/1, but it should be easier on memory,
 %% especially for objects with large values.
 -spec approximate_size(binary_version(), riak_object()) -> integer().
-approximate_size(Vsn, #r_object{bucket=Bucket,key=Key,contents=Contents,vclock=VClock}) ->
+approximate_size(Vsn, Obj=#r_object{bucket=Bucket,key=Key,vclock=VClock}) ->
+    Contents = get_contents(Obj),
     size(Bucket) + size(Key) + size(term_to_binary(VClock)) + contents_size(Vsn, Contents).
 
 sibs_of_binary(Count,SibsBin) ->
