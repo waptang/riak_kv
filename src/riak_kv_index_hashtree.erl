@@ -298,8 +298,8 @@ handle_cast(stop, State) ->
     {stop, normal, State};
 
 handle_cast({insert_object, BKey, RObj}, State) ->
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    IndexN = riak_kv_util:get_index_n(BKey, Ring),
+    {ok, _Ring} = riak_core_ring_manager:get_my_ring(),
+    {IndexN, _} = hd(State#state.trees),
     State2 = do_insert(IndexN, term_to_binary(BKey), hash_object(RObj), [], State),
     {noreply, State2};
 
