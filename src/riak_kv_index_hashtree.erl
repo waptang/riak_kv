@@ -511,10 +511,10 @@ valid_time(_) ->
     false.
 
 -spec do_insert(index_n(), binary(), binary(), proplist(), state()) -> state().
-do_insert(Id, Key, Hash, Opts, State=#state{trees=Trees}) ->
+do_insert(Id, Key, _Hash, _Opts, State=#state{trees=Trees}) ->
     case orddict:find(Id, Trees) of
         {ok, Tree} ->
-            Tree2 = hashtree:insert(Key, Hash, Tree, Opts),
+            Tree2 = Tree,
             Trees2 = orddict:store(Id, Tree2, Trees),
             State#state{trees=Trees2};
         _ ->
