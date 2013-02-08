@@ -152,10 +152,19 @@ start(_Type, _StartArgs) ->
             %% Add routes to webmachine
             [ webmachine_router:add_route(R)
               || R <- lists:reverse(riak_kv_web:dispatch_table()) ],
+            %% Run any initialization hooks
+            InitHooks = app_helper:get_env(riak_kv, app_init_hooks, []),
+            lists:foreach(fun({Mod,Fun}) ->
+                                  lager:debug("Running riak_kv init hook ~p:~p", [Mod, Fun]),
+                                  erlang:apply(Mod, Fun, [])
+                          end,
+                          InitHooks),
             {ok, Pid};
         {error, Reason} ->
             {error, Reason}
     end.
+
+
 
 %% @doc Prepare to stop - called before the supervisor tree is shutdown
 prep_stop(_State) ->
