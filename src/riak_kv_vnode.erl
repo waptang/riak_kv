@@ -522,7 +522,34 @@ handle_command(?KV_VNODE_STATUS_REQ{},
     {reply, {vnode_status, Index, VNodeStatus}, State};
 handle_command({reformat_object, BKey}, _Sender, State) ->
     {Reply, UpdState} = do_reformat(BKey, State),
-    {reply, Reply, UpdState}.
+    {reply, Reply, UpdState};
+handle_command(get_incorrect_index_entries,
+               Sender,
+               State=#state{idx=Index,
+                            mod=Mod,
+                            key_buf_size=BufferSize,
+                            modstate=ModState}) ->
+    case Mod of
+        riak_kv_eleveldb_backend ->
+            lager:info("Searching for incorrect index keys on partition ~p", [Index]),
+            BufferMod = riak_kv_fold_buffer,
+            ResultFun = result_fun(Sender),
+            Buffer = BufferMod:new(BufferSize, ResultFun),
+            FoldFun = fold_fun(keys, BufferMod, none),
+            FinishFun = finish_fun(BufferMod, Sender),
+            Opts = [{index, incorrect_format},
+                    async_fold],
+            case list(FoldFun, FinishFun, Mod, fold_keys, ModState, Opts, Buffer) of
+                {async, AsyncWork} ->
+                    {async, {fold, AsyncWork, FinishFun}, Sender, State};
+                _ ->
+                    {noreply, State}
+            end
+            ;
+        _ ->
+            lager:info("Backend ~p does not support incorrect index query", [Mod]),
+            {reply, [], State}
+    end.
 
 %% @doc Handle a coverage request.
 %% More information about the specification for the ItemFilter

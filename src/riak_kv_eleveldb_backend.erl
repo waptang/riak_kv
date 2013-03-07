@@ -476,6 +476,35 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, FilterField, StartTerm,
                     throw({break, Acc})
             end
     end;
+fold_keys_fun(FoldKeysFun, {index, incorrect_format}) ->
+    lager:info("Constructing fold keys function for incorrect index entries"),
+    %% Over incorrectly formatted 2i index values
+    fun(StorageKey, Acc) ->
+            lager:info("Folding saw leveldb storage key ~p", [StorageKey]),
+            Action =
+                case from_index_key(StorageKey) of
+                    IKey = {Bucket, Key, Field, Term} ->
+                        NewKey = to_index_key(Bucket, Key, Field, Term),
+                        case NewKey =:= StorageKey of
+                            true  -> 
+                                lager:info("Key is fine ~p -> ~p", [StorageKey, IKey]),
+                                ignore;
+                            false ->
+                                lager:info("Key is wrong ~p -> ~p", [StorageKey, IKey]),
+                                {fold, Bucket, Key}
+                        end;
+                    _ ->
+                        stop
+                end,
+            case Action of
+                {fold, B, K} ->
+                    FoldKeysFun(B, K, Acc);
+                ignore ->
+                    Acc;
+                stop ->
+                    throw({break, Acc})
+            end
+    end;
 fold_keys_fun(_FoldKeysFun, Other) ->
     throw({unknown_limiter, Other}).
 
@@ -511,6 +540,9 @@ fold_opts(Bucket, FoldOpts) ->
 to_first_key(undefined) ->
     %% Start at the first object in LevelDB...
     to_object_key(<<>>, <<>>);
+to_first_key({index, _}) ->
+    %% Start at first index entry
+    to_index_key(<<>>, <<>>, <<>>, <<>>);
 to_first_key({bucket, Bucket}) ->
     %% Start at the first object for a given bucket...
     to_object_key(Bucket, <<>>);

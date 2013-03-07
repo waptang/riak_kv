@@ -35,6 +35,7 @@
          make_request/2,
          get_index_n/2,
          preflist_siblings/1,
+         get_incorrect_index_entries/1,
          responsible_preflists/1,
          responsible_preflists/2]).
 
@@ -229,6 +230,27 @@ determine_all_n(Ring) ->
                                ordsets:add_element(N, AllN)
                        end, [DefaultN], BucketProps),
     AllN.
+
+get_incorrect_index_entries(Idx) ->
+    Ref = make_ref(),
+    lager:info("Querying incorrect index entries on partition ~p", [Idx]),
+    riak_core_vnode_master:command({Idx, node()},
+                                   get_incorrect_index_entries,
+                                   {raw, Ref, self()},
+                                   riak_kv_vnode_master),
+    Keys = collect_incorrect_index_entries(Ref, []),
+    Keys.
+
+% harvest keys
+collect_incorrect_index_entries(Ref, Keys) ->
+    receive
+        {Ref, done} ->
+            lager:info("Incorrect index keys stream ends"),
+            lists:flatten(Keys);
+        {Ref, MoreKeys} ->
+            lager:info("Received more incorrect index keys : ~p", [MoreKeys]),
+            collect_incorrect_index_entries(Ref, [MoreKeys | Keys])
+    end.
 
 %% ===================================================================
 %% EUnit tests
