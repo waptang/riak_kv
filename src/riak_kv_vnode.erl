@@ -520,6 +520,18 @@ handle_command(?KV_VNODE_STATUS_REQ{},
     BackendStatus = {backend_status, Mod, Mod:status(ModState)},
     VNodeStatus = [BackendStatus],
     {reply, {vnode_status, Index, VNodeStatus}, State};
+handle_command({fix_incorrect_index_entry, StorageKey},
+               _Sender,
+               State=#state{mod=Mod,
+                            modstate=ModState}) ->
+    Reply =
+        case Mod:fix_index(StorageKey, ModState) of
+            {ok, _UpModState} ->
+                ok;
+            {error, Reason, _UpModState} ->
+                {error, Reason}
+        end,
+    {reply, Reply, State};
 handle_command({reformat_object, BKey}, _Sender, State) ->
     {Reply, UpdState} = do_reformat(BKey, State),
     {reply, Reply, UpdState};

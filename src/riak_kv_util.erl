@@ -36,6 +36,9 @@
          get_index_n/2,
          preflist_siblings/1,
          get_incorrect_index_entries/1,
+         fix_incorrect_index_entry/2,
+         fix_incorrect_index_entries/1,
+         fix_incorrect_index_entries/0,
          responsible_preflists/1,
          responsible_preflists/2]).
 
@@ -252,6 +255,24 @@ collect_incorrect_index_entries(Ref, Keys) ->
             collect_incorrect_index_entries(Ref, [MoreKeys | Keys])
     end.
 
+fix_incorrect_index_entry(Idx, BadKey) ->
+    riak_core_vnode_master:sync_command({Idx, node()},
+                                        {fix_incorrect_index_entry, BadKey},
+                                        riak_kv_vnode_master).
+
+fix_incorrect_index_entries(Idx) ->
+    lists:foreach(fun(X) ->
+                          fix_incorrect_index_entry(Idx, X)
+                  end,
+                  get_incorrect_index_entries(Idx)).
+
+fix_incorrect_index_entries() ->
+    IdxList = [Idx || 
+               {riak_kv_vnode, Idx, _} <- riak_core_vnode_manager:all_vnodes()],
+    lists:foreach(fun(X) ->
+                          fix_incorrect_index_entries(X)
+                  end,
+                  IdxList).
 %% ===================================================================
 %% EUnit tests
 %% ===================================================================

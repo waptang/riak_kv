@@ -33,6 +33,7 @@
          put/5,
          delete/4,
          drop/1,
+         fix_index/2,
          fold_buckets/4,
          fold_keys/4,
          fold_objects/4,
@@ -159,6 +160,26 @@ put(Bucket, PrimaryKey, IndexSpecs, Val, #state{ref=Ref,
             {error, Reason, State}
     end.
 
+
+fix_index(IndexKey, #state{ref=Ref,
+                           read_opts=ReadOpts,
+                           write_opts=WriteOpts} = State) ->
+    case eleveldb:get(Ref, IndexKey, ReadOpts) of
+        {ok, _} ->
+            {Bucket, Key, Field, Value} = from_index_key(IndexKey),
+            NewKey = to_index_key(Bucket, Key, Field, Value),
+            Updates = [{delete, IndexKey}, {put, NewKey, <<>>}],
+            case eleveldb:write(Ref, Updates, WriteOpts) of
+                ok ->
+                    {ok, State};
+                {error, Reason} ->
+                    {error, Reason, State}
+            end;
+        not_found ->
+            {ok, State};
+        {error, Reason} ->
+            {error, Reason, State}
+    end.
 
 %% @doc Delete an object from the eleveldb backend
 -spec delete(riak_object:bucket(), riak_object:key(), [index_spec()], state()) ->
@@ -477,21 +498,17 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, FilterField, StartTerm,
             end
     end;
 fold_keys_fun(FoldKeysFun, {index, incorrect_format}) ->
-    lager:info("Constructing fold keys function for incorrect index entries"),
     %% Over incorrectly formatted 2i index values
     fun(StorageKey, Acc) ->
-            lager:info("Folding saw leveldb storage key ~p", [StorageKey]),
             Action =
                 case from_index_key(StorageKey) of
-                    IKey = {Bucket, Key, Field, Term} ->
+                    {Bucket, Key, Field, Term} ->
                         NewKey = to_index_key(Bucket, Key, Field, Term),
                         case NewKey =:= StorageKey of
-                            true  -> 
-                                lager:info("Key is fine ~p -> ~p", [StorageKey, IKey]),
+                            true  ->
                                 ignore;
                             false ->
-                                lager:info("Key is wrong ~p -> ~p", [StorageKey, IKey]),
-                                {fold, Bucket, Key}
+                                {fold, Bucket, StorageKey}
                         end;
                     _ ->
                         stop
