@@ -34,6 +34,7 @@
          delete/4,
          drop/1,
          fix_index/2,
+         mark_indexes_fixed/1,
          fold_buckets/4,
          fold_keys/4,
          fold_objects/4,
@@ -52,6 +53,7 @@
 
 -define(API_VERSION, 1).
 -define(CAPABILITIES, [async_fold, indexes]).
+-define(FIXED_INDEXES_KEY, sext:encode(fixed_indexes)).
 
 -record(state, {ref :: reference(),
                 data_root :: string(),
@@ -59,7 +61,8 @@
                 config :: config(),
                 read_opts = [],
                 write_opts = [],
-                fold_opts = [{fill_cache, false}]
+                fold_opts = [{fill_cache, false}],
+                fixed_indexes = false
                }).
 
 
@@ -100,7 +103,12 @@ start(Partition, Config) ->
     S0 = init_state(DataDir, Config),
     case open_db(S0) of
         {ok, State} ->
-            {ok, State};
+            case indexes_fixed(State) of
+                {error, Reason} ->
+                    {error, Reason};
+                IsFixed ->
+                    {ok, State#state{fixed_indexes=IsFixed}}
+            end;
         {error, Reason} ->
             {error, Reason}
     end.
@@ -139,18 +147,19 @@ get(Bucket, Key, #state{read_opts=ReadOpts,
                  {ok, state()} |
                  {error, term(), state()}.
 put(Bucket, PrimaryKey, IndexSpecs, Val, #state{ref=Ref,
-                                                write_opts=WriteOpts}=State) ->
+                                                write_opts=WriteOpts,
+                                                fixed_indexes=FixedIndexes}=State) ->
     %% Create the KV update...
     StorageKey = to_object_key(Bucket, PrimaryKey),
     Updates1 = [{put, StorageKey, Val}],
 
     %% Convert IndexSpecs to index updates...
     F = fun({add, Field, Value}) ->
-                {put, to_index_key(Bucket, PrimaryKey, Field, Value), <<>>};
+                [{put, to_index_key(Bucket, PrimaryKey, Field, Value), <<>>}];
            ({remove, Field, Value}) ->
-                {delete, to_index_key(Bucket, PrimaryKey, Field, Value)}
+                index_deletes(FixedIndexes, Bucket, PrimaryKey, Field, Value)
         end,
-    Updates2 = [F(X) || X <- IndexSpecs],
+    Updates2 = lists:flatmap(F, IndexSpecs),
 
     %% Perform the write...
     case eleveldb:write(Ref, Updates1 ++ Updates2, WriteOpts) of
@@ -160,6 +169,21 @@ put(Bucket, PrimaryKey, IndexSpecs, Val, #state{ref=Ref,
             {error, Reason, State}
     end.
 
+indexes_fixed(#state{ref=Ref,read_opts=ReadOpts}) ->
+    case eleveldb:get(Ref, ?FIXED_INDEXES_KEY, ReadOpts) of
+        {ok, _} ->
+            true;
+        not_found ->
+            false;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+index_deletes(FixedIndexes, Bucket, PrimaryKey, Field, Value) ->
+    KeyDelete = [{delete, to_index_key(Bucket, PrimaryKey, Field, Value)}],
+    LegacyDelete = [{delete, to_legacy_index_key(Bucket, PrimaryKey, Field, Value)}
+                    || FixedIndexes =:= false],
+    KeyDelete ++ LegacyDelete.
 
 fix_index(IndexKey, #state{ref=Ref,
                            read_opts=ReadOpts,
@@ -181,12 +205,22 @@ fix_index(IndexKey, #state{ref=Ref,
             {error, Reason, State}
     end.
 
+mark_indexes_fixed(State=#state{ref=Ref, write_opts=WriteOpts}) ->
+    Updates = [{put, ?FIXED_INDEXES_KEY, <<>>}],
+    case eleveldb:write(Ref, Updates, WriteOpts) of
+        ok ->
+            {ok, State};
+        {error, Reason} ->
+            {error, Reason, State}
+    end.
+
 %% @doc Delete an object from the eleveldb backend
 -spec delete(riak_object:bucket(), riak_object:key(), [index_spec()], state()) ->
                     {ok, state()} |
                     {error, term(), state()}.
 delete(Bucket, PrimaryKey, IndexSpecs, #state{ref=Ref,
-                                              write_opts=WriteOpts}=State) ->
+                                              write_opts=WriteOpts,
+                                              fixed_indexes=FixedIndexes}=State) ->
 
     %% Create the KV delete...
     StorageKey = to_object_key(Bucket, PrimaryKey),
@@ -194,9 +228,9 @@ delete(Bucket, PrimaryKey, IndexSpecs, #state{ref=Ref,
 
     %% Convert IndexSpecs to index deletes...
     F = fun({remove, Field, Value}) ->
-                {delete, to_index_key(Bucket, PrimaryKey, Field, Value)}
+                index_deletes(FixedIndexes, Bucket, PrimaryKey, Field, Value)
         end,
-    Updates2 = [F(X) || X <- IndexSpecs],
+    Updates2 = lists:flatmap(F, IndexSpecs),
 
     case eleveldb:write(Ref, Updates1 ++ Updates2, WriteOpts) of
         ok ->
@@ -592,6 +626,9 @@ from_object_key(LKey) ->
 
 to_index_key(Bucket, Key, Field, Term) ->
     sext:encode({i, Bucket, Field, Term, Key}).
+
+to_legacy_index_key(Bucket, Key, Field, Term) -> %% encode with legacy bignum encoding
+    sext:encode({i, Bucket, Field, Term, Key}, true).
 
 from_index_key(LKey) ->
     case sext:decode(LKey) of
