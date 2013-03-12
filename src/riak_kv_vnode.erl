@@ -520,47 +520,56 @@ handle_command(?KV_VNODE_STATUS_REQ{},
     BackendStatus = {backend_status, Mod, Mod:status(ModState)},
     VNodeStatus = [BackendStatus],
     {reply, {vnode_status, Index, VNodeStatus}, State};
+handle_command({reformat_object, BKey}, _Sender, State) ->
+    {Reply, UpdState} = do_reformat(BKey, State),
+    {reply, Reply, UpdState};
+handle_command({fix_incorrect_index_entry, done}, _Sender,
+               State=#state{mod=Mod, modstate=ModState}) ->
+    case Mod:mark_indexes_fixed(ModState) of %% only defined for eleveldb backend
+        {ok, NewModState} ->
+            {reply, ok, State#state{modstate=NewModState}};
+        {error, _Reason} ->
+            {reply, error, State}
+    end;
 handle_command({fix_incorrect_index_entry, StorageKey},
                _Sender,
                State=#state{mod=Mod,
                             modstate=ModState}) ->
     Reply =
-        case Mod:fix_index(StorageKey, ModState) of
+        case Mod:fix_index(StorageKey, ModState) of %% only defined for eleveldb backend
             {ok, _UpModState} ->
                 ok;
+            {ignore, _UpModState} ->
+                ignore;
             {error, Reason, _UpModState} ->
                 {error, Reason}
         end,
     {reply, Reply, State};
-handle_command({reformat_object, BKey}, _Sender, State) ->
-    {Reply, UpdState} = do_reformat(BKey, State),
-    {reply, Reply, UpdState};
 handle_command(get_incorrect_index_entries,
                Sender,
-               State=#state{idx=Index,
-                            mod=Mod,
-                            key_buf_size=BufferSize,
+               State=#state{mod=Mod,
                             modstate=ModState}) ->
     case Mod of
         riak_kv_eleveldb_backend ->
-            lager:info("Searching for incorrect index keys on partition ~p", [Index]),
-            BufferMod = riak_kv_fold_buffer,
-            ResultFun = result_fun(Sender),
-            Buffer = BufferMod:new(BufferSize, ResultFun),
-            FoldFun = fold_fun(keys, BufferMod, none),
-            FinishFun = finish_fun(BufferMod, Sender),
-            Opts = [{index, incorrect_format},
-                    async_fold],
-            case list(FoldFun, FinishFun, Mod, fold_keys, ModState, Opts, Buffer) of
-                {async, AsyncWork} ->
-                    {async, {fold, AsyncWork, FinishFun}, Sender, State};
-                _ ->
-                    {noreply, State}
-            end
-            ;
+            Status = Mod:status(ModState),
+            case proplists:get_value(fixed_indexes, Status) of
+                true -> {reply, done, State};
+                false ->
+                    FoldFun = fun(_, StorageKey, _) ->
+                                      riak_core_vnode:reply(Sender, StorageKey)
+                              end,
+                    FinishFun = fun(_) -> riak_core_vnode:reply(Sender, done) end,
+                    Opts = [{index, incorrect_format}, async_fold],
+                    case list(FoldFun, FinishFun, Mod, fold_keys, ModState, Opts, undefined) of
+                        {async, AsyncWork} ->
+                            {async, {fold, AsyncWork, FinishFun}, Sender, State};
+                        _ ->
+                            {noreply, State}
+                    end
+            end;
         _ ->
-            lager:info("Backend ~p does not support incorrect index query", [Mod]),
-            {reply, [], State}
+            lager:error("Backend ~p does not support incorrect index query", [Mod]),
+            {reply, ignore, State}
     end.
 
 %% @doc Handle a coverage request.

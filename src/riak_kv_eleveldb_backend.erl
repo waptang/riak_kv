@@ -103,14 +103,20 @@ start(Partition, Config) ->
     S0 = init_state(DataDir, Config),
     case open_db(S0) of
         {ok, State} ->
-            case indexes_fixed(State) of
-                {error, Reason} ->
-                    {error, Reason};
-                IsFixed ->
-                    {ok, State#state{fixed_indexes=IsFixed}}
-            end;
+            determine_fixed_index_status(State);
         {error, Reason} ->
             {error, Reason}
+    end.
+
+determine_fixed_index_status(State) ->
+    case indexes_fixed(State) of
+        {error, Reason} ->
+            {error, Reason};
+        true ->
+            {ok, State#state{fixed_indexes=true}};
+        false ->
+            IsEmpty = is_empty(State),
+            {ok, State#state{fixed_indexes=IsEmpty}}
     end.
 
 %% @doc Stop the eleveldb backend
@@ -200,16 +206,18 @@ fix_index(IndexKey, #state{ref=Ref,
                     {error, Reason, State}
             end;
         not_found ->
-            {ok, State};
+            {ignore, State};
         {error, Reason} ->
             {error, Reason, State}
     end.
 
+mark_indexes_fixed(State=#state{fixed_indexes=true}) ->
+    {ok, State};
 mark_indexes_fixed(State=#state{ref=Ref, write_opts=WriteOpts}) ->
     Updates = [{put, ?FIXED_INDEXES_KEY, <<>>}],
     case eleveldb:write(Ref, Updates, WriteOpts) of
         ok ->
-            {ok, State};
+            {ok, State#state{fixed_indexes=true}};
         {error, Reason} ->
             {error, Reason, State}
     end.
@@ -353,10 +361,10 @@ is_empty(#state{ref=Ref}) ->
 
 %% @doc Get the status information for this eleveldb backend
 -spec status(state()) -> [{atom(), term()}].
-status(State) ->
+status(State=#state{fixed_indexes=FixedIndexes}) ->
     {ok, Stats} = eleveldb:status(State#state.ref, <<"leveldb.stats">>),
     {ok, ReadBlockError} = eleveldb:status(State#state.ref, <<"leveldb.ReadBlockError">>),
-    [{stats, Stats}, {read_block_error, ReadBlockError}].
+    [{stats, Stats}, {read_block_error, ReadBlockError}, {fixed_indexes, FixedIndexes}].
 
 %% @doc Register an asynchronous callback
 -spec callback(reference(), any(), state()) -> {ok, state()}.

@@ -35,8 +35,6 @@
          make_request/2,
          get_index_n/2,
          preflist_siblings/1,
-         get_incorrect_index_entries/1,
-         fix_incorrect_index_entry/2,
          fix_incorrect_index_entries/1,
          fix_incorrect_index_entries/0,
          responsible_preflists/1,
@@ -234,45 +232,85 @@ determine_all_n(Ring) ->
                        end, [DefaultN], BucketProps),
     AllN.
 
-get_incorrect_index_entries(Idx) ->
+fix_incorrect_index_entries() ->
+    fix_incorrect_index_entries([]).
+
+%% needs to sum success/error/ignore accorss results of pmap
+fix_incorrect_index_entries(Opts) when is_list(Opts) ->
+    MaxN = proplists:get_value(concurrency, Opts, 2),
+    lager:info("index reformat starting with concurrency: ~p", [MaxN]),
+    IdxList = [Idx || {riak_kv_vnode, Idx, _} <- riak_core_vnode_manager:all_vnodes()],
+    Counts = riak_core_util:pmap(fun fix_incorrect_index_entries/1, IdxList, MaxN),
+    {SuccessCounts, IgnoredCounts, ErrorCounts} = lists:unzip3(Counts),
+    SuccessTotal = lists:sum(SuccessCounts),
+    IgnoredTotal = lists:sum(IgnoredCounts),
+    ErrorTotal = lists:sum(ErrorCounts),
+    case ErrorTotal of
+        0 ->
+            lager:info("index reformat complete on all partitions. Fixed: ~p, Ignored: ~p",
+                       [SuccessTotal, IgnoredTotal]);
+        _ ->
+            lager:info("index reformat encountered ~p errors reformatting keys. Please re-run",
+                       [ErrorTotal])
+    end,
+    {SuccessTotal, IgnoredTotal, ErrorTotal};
+fix_incorrect_index_entries(Idx) ->
+    fix_incorrect_index_entries(Idx, fun fix_incorrect_index_entry/3, {0, 0, 0}).
+
+fix_incorrect_index_entries(Idx, FixFun, Acc0) ->
     Ref = make_ref(),
-    lager:info("Querying incorrect index entries on partition ~p", [Idx]),
     riak_core_vnode_master:command({Idx, node()},
                                    get_incorrect_index_entries,
                                    {raw, Ref, self()},
                                    riak_kv_vnode_master),
-    Keys = collect_incorrect_index_entries(Ref, []),
-    Keys.
-
-% harvest keys
-collect_incorrect_index_entries(Ref, Keys) ->
-    receive
-        {Ref, done} ->
-            lager:info("Incorrect index keys stream ends"),
-            lists:flatten(Keys);
-        {Ref, MoreKeys} ->
-            lager:info("Received more incorrect index keys : ~p", [MoreKeys]),
-            collect_incorrect_index_entries(Ref, [MoreKeys | Keys])
+    case process_incorrect_index_entries(Ref, Idx, FixFun, Acc0) of
+        ignore -> Acc0;
+        {SuccessCount,_,ErrorCount}=Res ->
+            MarkRes = mark_indexes_reformatted(Idx, SuccessCount, ErrorCount),
+            case MarkRes of
+                error ->
+                    %% there was an error marking the partition as reformatted. treat this like
+                    %% any other error (indicating the need to re-run reformatting)
+                    {element(1, Res), element(2, Res), 1};
+                _ -> Res
+            end
     end.
 
-fix_incorrect_index_entry(Idx, BadKey) ->
+fix_incorrect_index_entry(Idx, BadKey, {Success, Ignore, Error}) ->
+    Res = riak_core_vnode_master:sync_command({Idx, node()},
+                                              {fix_incorrect_index_entry, BadKey},
+                                              riak_kv_vnode_master),
+    case Res of
+        ok ->
+            {Success+1, Ignore, Error};
+        ignore ->
+            {Success, Ignore+1, Error};
+        {error, _} ->
+            {Success, Ignore, Error+1}
+    end.
+
+%% needs to take an acc to count success/error/ignore
+process_incorrect_index_entries(Ref, Idx, FixFun, Acc) ->
+    receive
+        {Ref, ignore} ->
+            ignore;
+        {Ref, done} ->
+            Acc;
+        {Ref, Key} ->
+            NextAcc = FixFun(Idx, Key, Acc),
+            process_incorrect_index_entries(Ref, Idx, FixFun, NextAcc)
+    end.
+
+mark_indexes_reformatted(_, 0, 0) ->
+    ok;
+mark_indexes_reformatted(Idx, _, 0) ->
     riak_core_vnode_master:sync_command({Idx, node()},
-                                        {fix_incorrect_index_entry, BadKey},
-                                        riak_kv_vnode_master).
+                                        {fix_incorrect_index_entry, done},
+                                        riak_kv_vnode_master);
+mark_indexes_reformatted(_Idx, _SuccessCount, _ErrorCount) ->
+    undefined.
 
-fix_incorrect_index_entries(Idx) ->
-    lists:foreach(fun(X) ->
-                          fix_incorrect_index_entry(Idx, X)
-                  end,
-                  get_incorrect_index_entries(Idx)).
 
-fix_incorrect_index_entries() ->
-    IdxList = [Idx || 
-               {riak_kv_vnode, Idx, _} <- riak_core_vnode_manager:all_vnodes()],
-    lists:foreach(fun(X) ->
-                          fix_incorrect_index_entries(X)
-                  end,
-                  IdxList).
 %% ===================================================================
 %% EUnit tests
 %% ===================================================================
