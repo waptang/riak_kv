@@ -663,7 +663,8 @@ handoff_finished(_TargetNode, State) ->
     {ok, State}.
 
 handle_handoff_data(BinObj, State) ->
-    PBObj = riak_core_pb:decode_riakobject_pb(zlib:unzip(BinObj)),
+    DecodedObject = decode_binary_object(BinObj),
+    PBObj = riak_core_pb:decode_riakobject_pb(DecodedObject),
     {B, K} = BKey = {PBObj#riakobject_pb.bucket,PBObj#riakobject_pb.key},
     case do_diffobj_put(BKey, riak_object:from_binary(B, K, PBObj#riakobject_pb.val), State) of
         {ok, UpdModState} ->
@@ -680,8 +681,8 @@ encode_handoff_item({B, K}, V) ->
     %% unsupported formats to old nodes
     ObjFmt = riak_core_capability:get({riak_kv, object_format}, v0),
     Val = riak_object:to_binary_version(ObjFmt, B, K, V),
-    zlib:zip(riak_core_pb:encode_riakobject_pb(
-               #riakobject_pb{bucket=B, key=K, val=Val})).
+    PBEncodedObject = riak_core_pb:encode_riakobject_pb(#riakobject_pb{bucket=B, key=K, val=Val}),
+    encode_binary_object(PBEncodedObject).
 
 is_empty(State=#state{mod=Mod, modstate=ModState}) ->
     {Mod:is_empty(ModState), State}.
@@ -1444,6 +1445,23 @@ object_from_binary(B, K, ValBin) ->
         Obj -> Obj
     end.
 
+%% @private
+%% Encoding and decoding selection:
+
+handoff_data_encoding_method() ->
+    riak_core_capability:get({riak_kv, handoff_data_encoding}, encode_zlib).
+
+decode_binary_object(BinaryObject) ->
+    case handoff_data_encoding_method() of
+        encode_zlib -> zlib:unzip(BinaryObject);
+        encode_raw  -> binary_to_term(BinaryObject)
+    end.
+
+encode_binary_object(BinaryObject) ->
+    case handoff_data_encoding_method() of 
+        encode_zlib -> zlib:zip(BinaryObject);
+        encode_raw  -> term_to_binary(iolist_to_binary(BinaryObject))
+    end.
 
 -ifdef(TEST).
 
