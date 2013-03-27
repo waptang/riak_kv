@@ -475,7 +475,7 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, FilterField, StartTerm,
                                                 EndTerm >= Term ->
                     case Terms of
                         true ->
-                            FoldKeysFun(Bucket, {Key, Term}, Acc);
+                            FoldKeysFun(Bucket, {Term, Key}, Acc);
                         false ->
                             FoldKeysFun(Bucket, Key, Acc)
                     end;

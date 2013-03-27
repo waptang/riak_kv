@@ -426,7 +426,7 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket, {eq, <<"$key">>, _}}) ->
 %% Return the index term and the index key
 fold_keys_fun(FoldKeysFun, {index, _FilterBucket, {range, _Field, _Start, _End, true}}) ->
     fun({{Bucket, _FilterField, FilterTerm, Key}, _}, Acc) ->
-            FoldKeysFun(Bucket, {Key, FilterTerm}, Acc);
+            FoldKeysFun(Bucket, {FilterTerm, Key}, Acc);
        (_, Acc) ->
             Acc
     end;
