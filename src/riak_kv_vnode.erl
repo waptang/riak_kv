@@ -191,6 +191,14 @@ local_put(Index, Obj, Options) ->
     put({Index, node()}, BKey, Obj, ReqId, StartTime, Options, Sender),
     receive
         {Ref, Reply} ->
+            %% Turns out we get an additional DW message in the future
+            %% as well. Hack for now to drain DW message. TODO: fix for real.
+            receive
+                {Ref, _} ->
+                    ok
+            after 10 ->
+                    ok
+            end,
             Reply
     end.
 
@@ -650,10 +658,8 @@ handoff_finished(_TargetNode, State) ->
     {ok, State}.
 
 handle_handoff_data(BinObj, State) ->
-    DecodedObject = decode_binary_object(BinObj),
-    PBObj = riak_core_pb:decode_riakobject_pb(DecodedObject),
-    BKey = {PBObj#riakobject_pb.bucket,PBObj#riakobject_pb.key},
-    case do_diffobj_put(BKey, binary_to_term(PBObj#riakobject_pb.val), State) of
+    {BKey, Val} = decode_binary_object(BinObj),
+    case do_diffobj_put(BKey, binary_to_term(Val), State) of
         {ok, UpdModState} ->
             {reply, ok, State#state{modstate=UpdModState}};
         {error, Reason, UpdModState} ->
@@ -662,9 +668,18 @@ handle_handoff_data(BinObj, State) ->
             {reply, {error, Err}, State}
     end.
 
+get_capability(Name, Default) ->
+    case get({cached, Name}) of
+        undefined ->
+            Val = riak_core_capability:get(Name, Default),
+            put({cached, Name}, Val),
+            Val;
+        X ->
+            X
+    end.
+
 encode_handoff_item({B, K}, V) ->
-    PBEncodedObject = riak_core_pb:encode_riakobject_pb(#riakobject_pb{bucket=B, key=K, val=V}),
-    encode_binary_object(PBEncodedObject).
+    encode_binary_object(B, K, V).
 
 is_empty(State=#state{mod=Mod, modstate=ModState}) ->
     {Mod:is_empty(ModState), State}.
@@ -1356,18 +1371,29 @@ object_info({Bucket, _Key}=BKey) ->
 %% Encoding and decoding selection:
 
 handoff_data_encoding_method() ->
-    riak_core_capability:get({riak_kv, handoff_data_encoding}, encode_zlib).
+    %% riak_core_capability:get({riak_kv, handoff_data_encoding}, encode_zlib).
+    get_capability({riak_kv, handoff_data_encoding}, encode_zlib).
 
 decode_binary_object(BinaryObject) ->
     case handoff_data_encoding_method() of
-        encode_zlib -> zlib:unzip(BinaryObject);
-        encode_raw  -> binary_to_term(BinaryObject)
+        encode_zlib ->
+            DecodedObject = zlib:unzip(BinaryObject),
+            PBObj = riak_core_pb:decode_riakobject_pb(DecodedObject),
+            BKey = {PBObj#riakobject_pb.bucket,PBObj#riakobject_pb.key},
+            {BKey, PBObj#riakobject_pb.val};
+        encode_raw  ->
+            {B, K, Val} = binary_to_term(BinaryObject),
+            BKey = {B, K},
+            {BKey, Val}
     end.
 
-encode_binary_object(BinaryObject) ->
+encode_binary_object(B, K, Val) ->
     case handoff_data_encoding_method() of 
-        encode_zlib -> zlib:zip(BinaryObject);
-        encode_raw  -> term_to_binary(iolist_to_binary(BinaryObject))
+        encode_zlib ->
+            PBEncodedObject = riak_core_pb:encode_riakobject_pb(#riakobject_pb{bucket=B, key=K, val=Val}),
+            zlib:zip(PBEncodedObject);
+        encode_raw  ->
+            term_to_binary({B, K, Val})
     end.
 
 -ifdef(TEST).
