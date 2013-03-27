@@ -137,7 +137,55 @@ encodings_provided(RD, Ctx) ->
 %% @spec produce_index_results(reqdata(), context()) -> {binary(), reqdata(), context()}
 %% @doc Produce the JSON response to an index lookup.
 produce_index_results(RD, Ctx) ->
-    %% Extract vars...
+
+    case wrq:get_qs_value("stream", "false", RD) of
+        "true" ->
+            handle_streaming_index_query(RD, Ctx);
+        _ ->
+            handle_all_in_memory_index_query(RD, Ctx)
+    end.
+
+handle_streaming_index_query(RD, Ctx) ->
+    Client = Ctx#ctx.client,
+    Bucket = Ctx#ctx.bucket,
+    Query = Ctx#ctx.index_query,
+
+    %% Create a new multipart/mixed boundary
+    Boundary = riak_core_util:unique_id_62(),
+    CTypeRD = wrq:set_resp_header(
+                "Content-Type",
+                "multipart/mixed;boundary="++Boundary,
+                RD),
+
+    {ok, ReqID} =  Client:stream_get_index(Bucket, Query),
+    StreamFun = index_stream_helper(ReqID, Boundary),
+    {{stream, {<<>>, StreamFun}}, RD, CTypeRD}.
+
+index_stream_helper(ReqID, Boundary) ->
+    fun() ->
+        receive
+            {ReqID, done} ->
+                {iolist_to_binary(["\r\n--", Boundary, "--\r\n"]), done};
+            {ReqID, {results, Results}} ->
+                %% JSONify the results...@TODO k,v pairs?
+                JsonKeys1 = {struct, [{?Q_KEYS, Results}]},
+                JsonKeys2 = mochijson2:encode(JsonKeys1),
+                Body = ["\r\n--", Boundary, "\r\n",
+                        "Content-Type: application/json\r\n\r\n",
+                        JsonKeys2],
+                {iolist_to_binary(Body), index_stream_helper(ReqID, Boundary)};
+            {ReqID, Error} ->
+                lager:error("Error in index wm: ~p", [Error]),
+                Body = ["\r\n--", Boundary, "\r\n",
+                        "Content-Type: text/plain\r\n\r\n",
+                        "there was an error..."],
+                {iolist_to_binary(Body), done}
+        after 60000 ->
+            {error, timeout}
+        end
+    end.
+
+handle_all_in_memory_index_query(RD, Ctx) ->
     Client = Ctx#ctx.client,
     Bucket = Ctx#ctx.bucket,
     Query = Ctx#ctx.index_query,
@@ -145,11 +193,12 @@ produce_index_results(RD, Ctx) ->
     %% Do the index lookup...
     case Client:get_index(Bucket, Query) of
         {ok, Results} ->
-            %% JSONify the results...
+            %% JSONify the results...@TODO what about K,V pairs?
             JsonKeys1 = {struct, [{?Q_KEYS, Results}]},
             JsonKeys2 = mochijson2:encode(JsonKeys1),
             {JsonKeys2, RD, Ctx};
         {error, Reason} ->
             {{error, Reason}, RD, Ctx}
     end.
+
 
