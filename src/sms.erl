@@ -58,9 +58,7 @@ update(VnodeID, UpdateFun, Data) ->
 -spec done(sms()) -> [term()].
 done(Data) ->
     Values = values(Data),
-    Merged = lists:merge(Values),
-    lager:info("Done, merged ~p to ~p", [Values, Merged]),
-    Merged.
+    lists:merge(Values).
 
 
 %% @doc perform the streaming merge sort over given `Data:sms()'
@@ -87,7 +85,6 @@ unsafe_sms(Data) ->
     LessThan = ?DICTMODULE:map(fun (_Key, {Status, V}) -> {Status, element(1, V)} end, Split),
     GreaterThan = ?DICTMODULE:map(fun (_Key, {Status, V}) -> {Status, element(2, V)} end, Split),
     Merged = lists:merge(values(LessThan)),
-    lager:info("Mergeing ~p", [Merged]),
     {Merged, GreaterThan}.
 
 %% @private

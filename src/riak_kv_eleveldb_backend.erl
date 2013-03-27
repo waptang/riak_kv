@@ -458,7 +458,13 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, <<"$key">>, StartKey, E
                 {Bucket, Key} when FilterBucket == Bucket,
                                    StartKey =< Key,
                                    EndKey >= Key ->
-                    FoldKeysFun(Bucket, Key, Acc);
+                    try
+                        FoldKeysFun(Bucket, Key, Acc)
+                    catch
+                        stop_fold ->
+                            lager:info("Stopping keys fold"),
+                            {break, Acc}
+                    end;
                 _ ->
                     throw({break, Acc})
             end
@@ -473,11 +479,17 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, FilterField, StartTerm,
                                                 FilterField == Field,
                                                 StartTerm =< Term,
                                                 EndTerm >= Term ->
-                    case Terms of
-                        true ->
-                            FoldKeysFun(Bucket, {Term, Key}, Acc);
-                        false ->
-                            FoldKeysFun(Bucket, Key, Acc)
+                    try
+                        case Terms of
+                            true ->
+                                FoldKeysFun(Bucket, {Term, Key}, Acc);
+                            false ->
+                                FoldKeysFun(Bucket, Key, Acc)
+                        end
+                    catch
+                        stop_fold ->
+                            lager:info("Stopping fold"),
+                            {break, Acc}
                     end;
                 _ ->
                     throw({break, Acc})

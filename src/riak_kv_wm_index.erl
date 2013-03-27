@@ -159,7 +159,7 @@ handle_streaming_index_query(RD, Ctx) ->
 
     {ok, ReqID} =  Client:stream_get_index(Bucket, Query),
     StreamFun = index_stream_helper(ReqID, Boundary),
-    {{stream, {<<>>, StreamFun}}, RD, CTypeRD}.
+    {{stream, {<<>>, StreamFun}}, CTypeRD, Ctx}.
 
 index_stream_helper(ReqID, Boundary) ->
     fun() ->

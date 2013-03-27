@@ -51,7 +51,9 @@
 -type req_id() :: non_neg_integer().
 
 -record(state, {from :: from(),
-                merge_sort_buffer :: sms:sms()}).
+                merge_sort_buffer :: sms:sms(),
+                max_results = 100 :: pos_integer(),
+                results_sent = 0 :: non_neg_integer()}).
 
 %% @doc Returns `true' if the new ack-based backpressure index
 %% protocol should be used.  This decision is based on the
@@ -93,25 +95,38 @@ plan(CoverageVNodes, State) ->
 
 process_results(_VNode, {error, Reason}, _State) ->
     {error, Reason};
+process_results(VNode, {From, _Bucket, _Results}, State=#state{max_results=X, results_sent=Y})  when Y >= X ->
+    lager:info("Stopping fold on ~p", [VNode]),
+    riak_kv_vnode:stop_fold(From),
+    {done, State};
 process_results(VNode, {From, Bucket, Results}, State) ->
-    {ok, State2} =  process_results(VNode, {Bucket, Results}, State),
+    {ok, State2} = process_results(VNode, {Bucket, Results}, State),
     riak_kv_vnode:ack_keys(From),
     {ok, State2};
 process_results(VNode, {_Bucket, Results}, State) ->
     #state{merge_sort_buffer=MergeSortBuffer,
-          from={raw, ReqId, ClientPid}} = State,
+           from={raw, ReqId, ClientPid}, results_sent=ResultsSent, max_results=MaxResults} = State,
     %% TODO: What about MR, does it need / care for this
     %% add new results to buffer
     BufferWithNewResults = sms:add_results(VNode, Results, MergeSortBuffer),
     ProcessBuffer = sms:sms(BufferWithNewResults),
-    NewBuffer = case ProcessBuffer of
-        {[], BufferWithNewResults} ->
-            BufferWithNewResults;
-        {ToSend, NewBuff} ->
-            ClientPid ! {ReqId, {results, ToSend}},
-            NewBuff
-    end,
-    {ok, State#state{merge_sort_buffer=NewBuffer}};
+    {NewBuffer, Sent} = case ProcessBuffer of
+                            {[], BufferWithNewResults} ->
+                                lager:info("Who's empty?"),
+                                {BufferWithNewResults, 0};
+                            {ToSend, NewBuff} ->
+                                DownTheWire = case (ResultsSent + length(ToSend)) > MaxResults of
+                                                  true ->
+                                                      lager:info("Only sending a few ~p", [MaxResults - ResultsSent]),
+                                                      lists:sublist(ToSend, MaxResults - ResultsSent);
+                                                  false ->
+                                                      ToSend
+                                              end,
+                                ClientPid ! {ReqId, {results, DownTheWire}},
+                                {NewBuff, length(DownTheWire)}
+                        end,
+    lager:info("Sent ~p", [Sent]),
+    {ok, State#state{merge_sort_buffer=NewBuffer, results_sent=Sent+ResultsSent}};
 process_results(VNode, done, State) ->
     %% tell the sms buffer about the done vnode
     #state{merge_sort_buffer=MergeSortBuffer} = State,
@@ -145,10 +160,22 @@ finish(clean,
     ClientPid ! {ReqId, done},
     {stop, normal, StateData};
 finish(clean,
-       State=#state{from={raw, ReqId, ClientPid}, merge_sort_buffer=MergeSortBuffer}) ->
+       State=#state{from={raw, ReqId, ClientPid},
+                    merge_sort_buffer=MergeSortBuffer,
+                    results_sent=ResultsSent,
+                    max_results=MaxResults}) ->
     LastResults = sms:done(MergeSortBuffer),
-    ClientPid ! {ReqId, {results, LastResults}},
+    DownTheWire = case (ResultsSent + length(LastResults)) > MaxResults of
+                      true ->
+                          lists:sublist(LastResults, MaxResults - ResultsSent);
+                      false ->
+                          LastResults
+                  end,
+
+    ClientPid ! {ReqId, {results, DownTheWire}},
     ClientPid ! {ReqId, done},
+    lager:info("Sending last ~p results", [length(DownTheWire)]),
+    lager:info("Sent total of ~p results", [length(DownTheWire) + ResultsSent]),
     {stop, normal, State}.
 
 %% ===================================================================
