@@ -1109,7 +1109,7 @@ result_fun_ack(Bucket, Sender) ->
             receive
                 {Monitor, ok} ->
                     erlang:demonitor(Monitor, [flush]);
-                {Monitor, break} ->
+                {Monitor, stop_fold} ->
                     erlang:demonitor(Monitor, [flush]),
                     throw(stop_fold);
                 {'DOWN', Monitor, process, _Pid, _Reason} ->

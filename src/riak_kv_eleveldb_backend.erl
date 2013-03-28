@@ -462,8 +462,7 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, <<"$key">>, StartKey, E
                         FoldKeysFun(Bucket, Key, Acc)
                     catch
                         stop_fold ->
-                            lager:info("Stopping keys fold"),
-                            {break, Acc}
+                            throw({break, Acc})
                     end;
                 _ ->
                     throw({break, Acc})
@@ -488,8 +487,7 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, FilterField, StartTerm,
                         end
                     catch
                         stop_fold ->
-                            lager:info("Stopping fold"),
-                            {break, Acc}
+                            throw({break, Acc})
                     end;
                 _ ->
                     throw({break, Acc})

@@ -52,7 +52,7 @@
 
 -record(state, {from :: from(),
                 merge_sort_buffer :: sms:sms(),
-                max_results = 100 :: pos_integer(),
+                max_results = 5000 :: pos_integer(),
                 results_sent = 0 :: non_neg_integer()}).
 
 %% @doc Returns `true' if the new ack-based backpressure index
@@ -95,8 +95,7 @@ plan(CoverageVNodes, State) ->
 
 process_results(_VNode, {error, Reason}, _State) ->
     {error, Reason};
-process_results(VNode, {From, _Bucket, _Results}, State=#state{max_results=X, results_sent=Y})  when Y >= X ->
-    lager:info("Stopping fold on ~p", [VNode]),
+process_results(_VNode, {From, _Bucket, _Results}, State=#state{max_results=X, results_sent=Y})  when Y >= X ->
     riak_kv_vnode:stop_fold(From),
     {done, State};
 process_results(VNode, {From, Bucket, Results}, State) ->
@@ -112,12 +111,10 @@ process_results(VNode, {_Bucket, Results}, State) ->
     ProcessBuffer = sms:sms(BufferWithNewResults),
     {NewBuffer, Sent} = case ProcessBuffer of
                             {[], BufferWithNewResults} ->
-                                lager:info("Who's empty?"),
                                 {BufferWithNewResults, 0};
                             {ToSend, NewBuff} ->
                                 DownTheWire = case (ResultsSent + length(ToSend)) > MaxResults of
                                                   true ->
-                                                      lager:info("Only sending a few ~p", [MaxResults - ResultsSent]),
                                                       lists:sublist(ToSend, MaxResults - ResultsSent);
                                                   false ->
                                                       ToSend
@@ -125,7 +122,6 @@ process_results(VNode, {_Bucket, Results}, State) ->
                                 ClientPid ! {ReqId, {results, DownTheWire}},
                                 {NewBuff, length(DownTheWire)}
                         end,
-    lager:info("Sent ~p", [Sent]),
     {ok, State#state{merge_sort_buffer=NewBuffer, results_sent=Sent+ResultsSent}};
 process_results(VNode, done, State) ->
     %% tell the sms buffer about the done vnode
@@ -174,8 +170,6 @@ finish(clean,
 
     ClientPid ! {ReqId, {results, DownTheWire}},
     ClientPid ! {ReqId, done},
-    lager:info("Sending last ~p results", [length(DownTheWire)]),
-    lager:info("Sent total of ~p results", [length(DownTheWire) + ResultsSent]),
     {stop, normal, State}.
 
 %% ===================================================================
