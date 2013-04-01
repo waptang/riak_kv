@@ -85,8 +85,8 @@ process(#rpbindexreq{bucket=Bucket, index=Index, qtype=eq, key=SKey}, #state{cli
 process(#rpbindexreq{bucket=Bucket, index=Index, qtype=range,
                      range_min=Min, range_max=Max, return_terms=ReturnTerms0}, #state{client=Client}=State) ->
     CanReturnTerms = riak_core_capability:get({riak_kv, '2i_return_terms'}, false),
-    ReturnTerms = (normalize_bool(ReturnTerms0) andalso CanReturnTerms),
-    case riak_index:to_index_query(Index, [Min, Max], ReturnTerms) of
+    ReturnTerms = normalize_bool(ReturnTerms0),
+    case riak_index:to_index_query(Index, [Min, Max], CanReturnTerms) of
         {ok, Query} ->
             case {ReturnTerms, Client:get_index(Bucket, Query)} of
                 {false, {ok, Results}} ->

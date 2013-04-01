@@ -45,8 +45,12 @@
           client,       %% riak_client() - the store client
           riak,         %% local | {node(), atom()} - params for riak client
           bucket,       %% The bucket to query.
-          index_query   %% The query..
+          index_query,   %% The query..
+          max_results :: all | pos_integer(), %% maximum nunber of 2i results to return, the page size.
+          return_terms = false :: boolean() %% should the index values be returned
          }).
+
+-define(ALL_2I_RESULTS, all).
 
 -include_lib("webmachine/include/webmachine.hrl").
 -include("riak_kv_wm_raw.hrl").
@@ -92,21 +96,43 @@ malformed_request(RD, Ctx) ->
     ReturnTerms0 = wrq:get_qs_value(?Q_2I_RETURNTERMS, "false", RD),
     ReturnTerms = normalize_boolean(string:to_lower(ReturnTerms0)),
     CanReturnTerms = riak_core_capability:get({riak_kv, '2i_return_terms'}, false),
+    MaxResults0 = wrq:get_qs_value(?Q_2I_MAX_RESULTS, ?ALL_2I_RESULTS, RD),
 
-    case riak_index:to_index_query(IndexField, Args2, (ReturnTerms andalso CanReturnTerms)) of
-        {ok, Query} ->
+    case {validate_max(MaxResults0), riak_index:to_index_query(IndexField, Args2, CanReturnTerms)} of
+        {{true, MaxResults}, {ok, Query}} ->
             %% Request is valid.
             NewCtx = Ctx#ctx{
                        bucket = Bucket,
-                       index_query = Query
+                       index_query = Query,
+                       max_results = MaxResults,
+                       return_terms = ReturnTerms
                       },
             {false, RD, NewCtx};
-        {error, Reason} ->
+        {_, {error, Reason}} ->
             {true,
              wrq:set_resp_body(
                io_lib:format("Invalid query: ~p~n", [Reason]),
                wrq:set_resp_header(?HEAD_CTYPE, "text/plain", RD)),
+             Ctx};
+        {{false, BadVal}, _} ->
+            {true,
+             wrq:set_resp_body(io_lib:format("Invalid ~p. ~p is not a positive integer",
+                                             [?Q_2I_MAX_RESULTS, BadVal]),
+                               wrq:set_resp_header(?HEAD_CTYPE, "text/plain", RD)),
              Ctx}
+    end.
+
+validate_max(all) ->
+    {true, all};
+validate_max(N) when is_list(N) ->
+    try
+        list_to_integer(N) of
+        Max when Max > 0  ->
+            {true, Max};
+        LessThanZero ->
+            {false, LessThanZero}
+    catch _:_ ->
+            {false, N}
     end.
 
 normalize_boolean("false") ->
@@ -137,7 +163,6 @@ encodings_provided(RD, Ctx) ->
 %% @spec produce_index_results(reqdata(), context()) -> {binary(), reqdata(), context()}
 %% @doc Produce the JSON response to an index lookup.
 produce_index_results(RD, Ctx) ->
-
     case wrq:get_qs_value("stream", "false", RD) of
         "true" ->
             handle_streaming_index_query(RD, Ctx);
@@ -149,6 +174,8 @@ handle_streaming_index_query(RD, Ctx) ->
     Client = Ctx#ctx.client,
     Bucket = Ctx#ctx.bucket,
     Query = Ctx#ctx.index_query,
+    MaxResults = Ctx#ctx.max_results,
+    ReturnTerms = Ctx#ctx.return_terms,
 
     %% Create a new multipart/mixed boundary
     Boundary = riak_core_util:unique_id_62(),
@@ -157,23 +184,22 @@ handle_streaming_index_query(RD, Ctx) ->
                 "multipart/mixed;boundary="++Boundary,
                 RD),
 
-    {ok, ReqID} =  Client:stream_get_index(Bucket, Query),
-    StreamFun = index_stream_helper(ReqID, Boundary),
+    {ok, ReqID} =  Client:stream_get_index(Bucket, Query, [{max_results, MaxResults}]),
+    StreamFun = index_stream_helper(ReqID, Boundary, ReturnTerms),
     {{stream, {<<>>, StreamFun}}, CTypeRD, Ctx}.
 
-index_stream_helper(ReqID, Boundary) ->
+index_stream_helper(ReqID, Boundary, ReturnTerms) ->
     fun() ->
         receive
             {ReqID, done} ->
                 {iolist_to_binary(["\r\n--", Boundary, "--\r\n"]), done};
             {ReqID, {results, Results}} ->
                 %% JSONify the results...@TODO k,v pairs?
-                JsonKeys1 = {struct, [{?Q_KEYS, Results}]},
-                JsonKeys2 = mochijson2:encode(JsonKeys1),
+                JsonResults = encode_results(Results, ReturnTerms),
                 Body = ["\r\n--", Boundary, "\r\n",
                         "Content-Type: application/json\r\n\r\n",
-                        JsonKeys2],
-                {iolist_to_binary(Body), index_stream_helper(ReqID, Boundary)};
+                        JsonResults],
+                {iolist_to_binary(Body), index_stream_helper(ReqID, Boundary, ReturnTerms)};
             {ReqID, Error} ->
                 lager:error("Error in index wm: ~p", [Error]),
                 Body = ["\r\n--", Boundary, "\r\n",
@@ -189,16 +215,24 @@ handle_all_in_memory_index_query(RD, Ctx) ->
     Client = Ctx#ctx.client,
     Bucket = Ctx#ctx.bucket,
     Query = Ctx#ctx.index_query,
+    MaxResults = Ctx#ctx.max_results,
+    ReturnTerms = Ctx#ctx.return_terms,
 
     %% Do the index lookup...
-    case Client:get_index(Bucket, Query) of
+    case Client:get_index(Bucket, Query, [{max_results, MaxResults}]) of
         {ok, Results} ->
-            %% JSONify the results...@TODO what about K,V pairs?
-            JsonKeys1 = {struct, [{?Q_KEYS, Results}]},
-            JsonKeys2 = mochijson2:encode(JsonKeys1),
-            {JsonKeys2, RD, Ctx};
+            JsonResults = encode_results(Results, ReturnTerms),
+            {JsonResults, RD, Ctx};
         {error, Reason} ->
             {{error, Reason}, RD, Ctx}
     end.
+
+encode_results(Results, true) ->
+    JsonKeys1 = {struct, [{?Q_KEYS, Results}]},
+    mochijson2:encode(JsonKeys1);
+encode_results(Results, false) ->
+    JustTheKeys = [K || {_V, K} <- Results],
+    JsonKeys1 = {struct, [{?Q_KEYS, JustTheKeys}]},
+    mochijson2:encode(JsonKeys1).
 
 

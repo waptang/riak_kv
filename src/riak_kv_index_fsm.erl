@@ -52,7 +52,7 @@
 
 -record(state, {from :: from(),
                 merge_sort_buffer :: sms:sms(),
-                max_results = 5000 :: pos_integer(),
+                max_results :: all | pos_integer(),
                 results_sent = 0 :: non_neg_integer()}).
 
 %% @doc Returns `true' if the new ack-based backpressure index
@@ -82,13 +82,17 @@ req(Bucket, ItemFilter, Query) ->
 %% should cover, the service to use to check for available nodes,
 %% and the registered name to use to access the vnode master process.
 init(From={_, _, _}, [Bucket, ItemFilter, Query, Timeout]) ->
+    %% http://erlang.org/doc/reference_manual/expressions.html#id77404
+    %% atom() > number()
+    init(From, [Bucket, ItemFilter, Query, Timeout, all]);
+init(From={_, _, _}, [Bucket, ItemFilter, Query, Timeout, MaxResults]) ->
     %% Get the bucket n_val for use in creating a coverage plan
     BucketProps = riak_core_bucket:get_bucket(Bucket),
     NVal = proplists:get_value(n_val, BucketProps),
     %% Construct the key listing request
     Req = req(Bucket, ItemFilter, Query),
     {Req, all, NVal, 1, riak_kv, riak_kv_vnode_master, Timeout,
-     #state{from=From}}.
+     #state{from=From, max_results=MaxResults}}.
 
 plan(CoverageVNodes, State) ->
     {ok, State#state{merge_sort_buffer=sms:new(CoverageVNodes)}}.
