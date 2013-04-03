@@ -47,7 +47,7 @@ add_results(VnodeID, done, Data) ->
     UpdateFun = fun({active, Prev}) -> {done, Prev} end,
     update(VnodeID, UpdateFun, Data);
 add_results(VnodeID, Results, Data) ->
-    UpdateFun = fun ({active, Prev}) -> {active, Prev ++ lists:reverse(Results)} end,
+    UpdateFun = fun ({active, Prev}) -> {active, Prev ++ Results} end,
     update(VnodeID, UpdateFun, Data).
 
 %% @private

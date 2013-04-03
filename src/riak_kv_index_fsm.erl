@@ -111,7 +111,7 @@ process_results(VNode, {_Bucket, Results}, State) ->
            from={raw, ReqId, ClientPid}, results_sent=ResultsSent, max_results=MaxResults} = State,
     %% TODO: What about MR, does it need / care for this
     %% add new results to buffer
-    BufferWithNewResults = sms:add_results(VNode, Results, MergeSortBuffer),
+    BufferWithNewResults = sms:add_results(VNode, lists:reverse(Results), MergeSortBuffer),
     ProcessBuffer = sms:sms(BufferWithNewResults),
     {NewBuffer, Sent} = case ProcessBuffer of
                             {[], BufferWithNewResults} ->
@@ -171,7 +171,6 @@ finish(clean,
                       false ->
                           LastResults
                   end,
-
     ClientPid ! {ReqId, {results, DownTheWire}},
     ClientPid ! {ReqId, done},
     {stop, normal, State}.
