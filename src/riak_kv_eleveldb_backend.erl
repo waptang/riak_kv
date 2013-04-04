@@ -447,9 +447,22 @@ fold_keys_fun(FoldKeysFun, {bucket, FilterBucket}) ->
 fold_keys_fun(FoldKeysFun, {index, FilterBucket, {eq, <<"$bucket">>, _}}) ->
     %% 2I exact match query on special $bucket field...
     fold_keys_fun(FoldKeysFun, {bucket, FilterBucket});
+fold_keys_fun(FoldKeysFun, {index, FilterBucket, {eq, <<"$bucket">>, _, _}}) ->
+    %% 2I exact match query on special $bucket field...
+    fold_keys_fun(FoldKeysFun, {bucket, FilterBucket});
 fold_keys_fun(FoldKeysFun, {index, FilterBucket, {eq, FilterField, FilterTerm}}) ->
     %% Rewrite 2I exact match query as a range...
     NewQuery = {range, FilterField, FilterTerm, FilterTerm},
+    fold_keys_fun(FoldKeysFun, {index, FilterBucket, NewQuery});
+fold_keys_fun(FoldKeysFun, {index, FilterBucket, {eq, <<"$key">>, _FilterTerm, StartKey}}) ->
+    %% Rewrite 2I exact match query as a range...
+    NewQuery = {range, <<"$key">>, StartKey, StartKey},
+    fold_keys_fun(FoldKeysFun, {index, FilterBucket, NewQuery});
+fold_keys_fun(FoldKeysFun, {index, FilterBucket, {eq, FilterField, FilterTerm, StartKey}}) ->
+    %% Rewrite 2I exact match query as a range...
+    %% And a StartKey means pagination, which requires sorting
+    %% so return terms too
+    NewQuery = {range, FilterField, FilterTerm, FilterTerm, true, StartKey},
     fold_keys_fun(FoldKeysFun, {index, FilterBucket, NewQuery});
 fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, <<"$key">>, StartKey, EndKey}}) ->
     %% 2I range query on special $key field...
@@ -469,8 +482,10 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, <<"$key">>, StartKey, E
             end
     end;
 fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, FilterField, StartTerm, EndTerm}}) ->
-    fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, FilterField, StartTerm, EndTerm, false}});
-fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, FilterField, StartTerm, EndTerm, Terms}}) ->
+    fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, FilterField, StartTerm, EndTerm, false, undefined}});
+fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, FilterField, StartTerm, EndTerm, ReturnTerms}}) ->
+    fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, FilterField, StartTerm, EndTerm, ReturnTerms, undefined}});
+fold_keys_fun(FoldKeysFun, {index, FilterBucket, {range, FilterField, StartTerm, EndTerm, Terms, _}}) -> %% Start Key doesn't (shouldn't!) matter
     %% 2I range query...
     fun(StorageKey, Acc) ->
             case from_index_key(StorageKey) of
@@ -534,9 +549,18 @@ to_first_key({bucket, Bucket}) ->
 to_first_key({index, Bucket, {eq, <<"$bucket">>, _Term}}) ->
     %% 2I exact match query on special $bucket field...
     to_first_key({bucket, Bucket});
+to_first_key({index, Bucket, {eq, <<"$bucket">>, _Term, StartKey}}) ->
+    to_object_key(Bucket, StartKey);
+to_first_key({index, Bucket, {eq, <<"$key">>, Term}}) ->
+    to_object_key(Bucket, Term);
+to_first_key({index, Bucket, {eq, <<"$key">>, _Term, StartKey}}) -> %% Nonsense, but valid
+    to_object_key(Bucket, StartKey);
 to_first_key({index, Bucket, {eq, Field, Term}}) ->
     %% Rewrite 2I exact match query as a range...
     to_first_key({index, Bucket, {range, Field, Term, Term}});
+to_first_key({index, Bucket, {eq, Field, Term, StartKey}}) ->
+    %% pagination, means sorting
+    to_first_key({index, Bucket, {range, Field, Term, Term, true, StartKey}});
 to_first_key({index, Bucket, {range, <<"$key">>, StartTerm, _EndTerm}}) ->
     %% 2I range query on special $key field...
     to_object_key(Bucket, StartTerm);
@@ -546,6 +570,9 @@ to_first_key({index, Bucket, {range, Field, StartTerm, _EndTerm}}) ->
 to_first_key({index, Bucket, {range, Field, StartTerm, _EndTerm, _Terms}}) ->
     %% 2I range query (return terms too)
     to_index_key(Bucket, <<>>, Field, StartTerm);
+to_first_key({index, Bucket, {range, Field, StartTerm, _EndTerm, _Terms, StartKey}}) ->
+    %% If capable of pagination, is also a return terms query
+    to_index_key(Bucket, StartKey, Field, StartTerm);
 to_first_key(Other) ->
     erlang:throw({unknown_limiter, Other}).
 

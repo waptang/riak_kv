@@ -95,12 +95,15 @@ malformed_request(RD, Ctx) ->
     Args2 = [list_to_binary(riak_kv_wm_utils:maybe_decode_uri(RD, X)) || X <- Args1],
     ReturnTerms0 = wrq:get_qs_value(?Q_2I_RETURNTERMS, "false", RD),
     ReturnTerms = normalize_boolean(string:to_lower(ReturnTerms0)),
-    CanReturnTerms = riak_core_capability:get({riak_kv, '2i_return_terms'}, false),
+    CanReturnTerms = riak_core_capability:get({riak_kv, '2i_return_terms'}, false), %% Move into riak_index
     MaxResults0 = wrq:get_qs_value(?Q_2I_MAX_RESULTS, ?ALL_2I_RESULTS, RD),
+    Continuation0 = wrq:get_qs_value(?Q_2I_CONTINUATION, undefined, RD),
+    Continuation = decode_contintuation(Continuation0),
 
-    case {validate_max(MaxResults0), riak_index:to_index_query(IndexField, Args2, CanReturnTerms)} of
+    case {validate_max(MaxResults0), riak_index:to_index_query(IndexField, Args2, CanReturnTerms, Continuation)} of
         {{true, MaxResults}, {ok, Query}} ->
             %% Request is valid.
+            ResultFilterFun = riak_index:result_filter(Continuation),
             NewCtx = Ctx#ctx{
                        bucket = Bucket,
                        index_query = Query,
@@ -185,21 +188,30 @@ handle_streaming_index_query(RD, Ctx) ->
                 RD),
 
     {ok, ReqID} =  Client:stream_get_index(Bucket, Query, [{max_results, MaxResults}]),
-    StreamFun = index_stream_helper(ReqID, Boundary, ReturnTerms),
+    StreamFun = index_stream_helper(ReqID, Boundary, ReturnTerms, MaxResults, undefined),
     {{stream, {<<>>, StreamFun}}, CTypeRD, Ctx}.
 
-index_stream_helper(ReqID, Boundary, ReturnTerms) ->
+index_stream_helper(ReqID, Boundary, ReturnTerms, MaxResults, LastResult) ->
     fun() ->
         receive
             {ReqID, done} ->
-                {iolist_to_binary(["\r\n--", Boundary, "--\r\n"]), done};
+                Final = case make_continuation(LastResult, MaxResults) of
+                            [] -> ["\r\n--", Boundary, "--\r\n"];
+                            Continuation ->
+                                Json = mochijson2:encode({struct, Continuation}),
+                                ["\r\n--", Boundary, "--\r\n",
+                                 "Content-Type: application/json\r\n\r\n",
+                                 Json,
+                                 "\r\n--", Boundary, "--\r\n"]
+                        end,
+                {iolist_to_binary(Final), done};
             {ReqID, {results, Results}} ->
                 %% JSONify the results...@TODO k,v pairs?
-                JsonResults = encode_results(Results, ReturnTerms),
+                JsonResults = encode_results(Results, ReturnTerms, []),
                 Body = ["\r\n--", Boundary, "\r\n",
                         "Content-Type: application/json\r\n\r\n",
                         JsonResults],
-                {iolist_to_binary(Body), index_stream_helper(ReqID, Boundary, ReturnTerms)};
+                {iolist_to_binary(Body), index_stream_helper(ReqID, Boundary, ReturnTerms, MaxResults, last_result(Results))};
             {ReqID, Error} ->
                 lager:error("Error in index wm: ~p", [Error]),
                 Body = ["\r\n--", Boundary, "\r\n",
@@ -221,18 +233,36 @@ handle_all_in_memory_index_query(RD, Ctx) ->
     %% Do the index lookup...
     case Client:get_index(Bucket, Query, [{max_results, MaxResults}]) of
         {ok, Results} ->
-            JsonResults = encode_results(Results, ReturnTerms),
+            Continuation = make_continuation(last_result(Results), MaxResults),
+            JsonResults = encode_results(Results, ReturnTerms, Continuation),
             {JsonResults, RD, Ctx};
         {error, Reason} ->
             {{error, Reason}, RD, Ctx}
     end.
 
-encode_results(Results, true) ->
-    JsonKeys1 = {struct, [{?Q_KEYS, Results}]},
-    mochijson2:encode(JsonKeys1);
-encode_results(Results, false) ->
+encode_results(Results, true, Continuation) ->
+    JsonKeys2 = {struct, [{?Q_KEYS, Results}] ++ Continuation},
+    mochijson2:encode(JsonKeys2);
+encode_results(Results, false, Continuation) ->
     JustTheKeys = [K || {_V, K} <- Results],
-    JsonKeys1 = {struct, [{?Q_KEYS, JustTheKeys}]},
+    JsonKeys1 = {struct, [{?Q_KEYS, JustTheKeys}] ++ Continuation},
     mochijson2:encode(JsonKeys1).
 
+last_result([]) ->
+    undefined;
+last_result(L) ->
+    lists:last(L).
+
+make_continuation(undefined, _) ->
+    [];
+make_continuation(LastKeyVal, MaxResults) when is_integer(MaxResults) ->
+    Continuation = riak_index:make_continuation(LastKeyVal),
+    [{?Q_2I_CONTINUATION, base64:encode(term_to_binary(Continuation))}];
+make_continuation(_, _) ->
+    [].
+
+decode_contintuation(undefined) ->
+    undefined;
+decode_contintuation(Continuation) ->
+    binary_to_term(base64:decode(Continuation)).
 

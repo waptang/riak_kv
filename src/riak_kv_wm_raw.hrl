@@ -66,3 +66,4 @@
 -define(Q_RETURNBODY, "returnbody").
 -define(Q_2I_RETURNTERMS, "returnterms").
 -define(Q_2I_MAX_RESULTS, "maxresults").
+-define(Q_2I_CONTINUATION, "continuation").

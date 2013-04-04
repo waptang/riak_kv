@@ -33,7 +33,8 @@
          normalize_index_field/1,
          timestamp/0,
          to_index_query/2,
-         to_index_query/3
+         to_index_query/4,
+         make_continuation/1
         ]).
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -55,6 +56,10 @@
 %% @type query_element()   :: {eq,    index_field(), [index_value()]},
 %%                         :: {range, index_field(), [index_value(), index_value()}
 
+-type last_result() :: {value(), key()} | key().
+-type value() :: binary() | integer().
+-type key() :: binary().
+-opaque continuation() :: last_result().
 
 mapred_index(Dest, Args) ->
     mapred_index(Dest, Args, ?TIMEOUT).
@@ -228,49 +233,64 @@ timestamp() ->
 
 
 to_index_query(IndexField, Args) ->
-    to_index_query(IndexField, Args, false).
+    to_index_query(IndexField, Args, false, undefined).
 
 %% @spec to_index_query(binary(), [binary()]) ->
 %%         {ok, {atom(), binary(), list(binary())}} | {error, Reasons}.
 %% @doc Given an IndexOp, IndexName, and Args, construct and return a
 %%      valid query, or a list of errors if the query is malformed.
-to_index_query(IndexField, Args, ReturnTerms) ->
+to_index_query(IndexField, Args, ReturnTerms, Continuation) ->
     %% Normalize the index field...
     IndexField1 = riak_index:normalize_index_field(IndexField),
-
     %% Normalize the arguments...
-    case riak_index:parse_fields([{IndexField1, X} || X <- Args]) of
-        {ok, []} ->
-            {error, {too_few_arguments, Args}};
+    Query = case riak_index:parse_fields([{IndexField1, X} || X <- Args]) of
+                {ok, []} ->
+                    {error, {too_few_arguments, Args}};
 
-        {ok, [{_, Value}]} ->
-            %% One argument == exact match query
-            {ok, {eq, IndexField1, Value}};
+                {ok, [{_, Value}]} ->
+                    %% One argument == exact match query
+                    {ok, {eq, IndexField1, Value}};
 
-        {ok, [{Field, Start}, {Field, End}]} ->
-            %% Two arguments == range query
-            case End > Start of
-                true ->
-                    case {Field, ReturnTerms} of
-                        {?KEYFIELD, _} ->
-                            %% Not a range query where we can return the index term, since
-                            %% it is the Key itself
-                            {ok, {range, IndexField1, Start, End}};
-                        {_, true} ->
-                            {ok, {range, IndexField1, Start, End, true}};
-                        {_, false} ->
-                            {ok,{range, IndexField1, Start, End}}
+                {ok, [{Field, Start}, {Field, End}]} ->
+                    %% Two arguments == range query
+                    case End > Start of
+                        true ->
+                            case {Field, ReturnTerms} of
+                                {?KEYFIELD, _} ->
+                                    %% Not a range query where we can return the index term, since
+                                    %% it is the Key itself
+                                    {ok, {range, IndexField1, Start, End}};
+                                {_, true} ->
+                                    {ok, {range, IndexField1, Start, End, true}};
+                                {_, false} ->
+                                    {ok,{range, IndexField1, Start, End}}
+                            end;
+                        false ->
+                            {error, {invalid_range, Args}}
                     end;
-                false ->
-                    {error, {invalid_range, Args}}
-            end;
 
-        {ok, _} ->
-            {error, {too_many_arguments, Args}};
+                {ok, _} ->
+                    {error, {too_many_arguments, Args}};
 
-        {error, FailureReasons} ->
-            {error, FailureReasons}
-    end.
+                {error, FailureReasons} ->
+                    {error, FailureReasons}
+            end,
+    apply_continuation(Query, Continuation).
+
+apply_continuation({error, _Reason}=Error, _Continuation) ->
+    Error;
+apply_continuation(Query, undefined) ->
+    Query;
+apply_continuation({ok, {eq, Field, Value}}, LastKey) when is_binary(LastKey) ->
+    {ok ,{eq, Field, Value, LastKey}};
+apply_continuation({ok, {range, ?KEYFIELD, _OldStart, End}}, LastKey) when is_binary(LastKey), End > LastKey ->
+    {ok, {range, ?KEYFIELD, LastKey, End}};
+apply_continuation({ok, {range, Field, _OldStart, End}}, {LastValue, LastKey}) when LastValue =< End  ->
+    {ok, {range, Field, LastValue, End, LastKey}};
+apply_continuation({ok, {range, Field, _OldStart, End, ReturnTerms}}, {LastValue, LastKey}) when LastValue =< End ->
+    {ok, {range, Field, LastValue, End, ReturnTerms, LastKey}};
+apply_continuation(Query, Continuation) ->
+    {error, {invalid_continuation, Continuation, Query}}.
 
 
 %% @spec field_types() -> data_type_defs().
@@ -315,6 +335,16 @@ normalize_index_field(V) when is_binary(V) ->
     normalize_index_field(binary_to_list(V));
 normalize_index_field(V) when is_list(V) ->
     list_to_binary(string:to_lower(V)).
+
+%% @doc To enable pagination.
+%% returns an opaque value that
+%% must be passed to
+%% `to_index_query/4' to
+%% get a query that will "continue"
+%% from the given last result
+-spec make_continuation(last_result()) -> continuation().
+make_continuation(V) when is_tuple(V); is_binary(V) ->
+    V.
 
 %% ====================
 %% TESTS
