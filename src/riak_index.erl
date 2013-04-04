@@ -256,10 +256,10 @@ to_index_query(IndexField, Args, ReturnTerms, Continuation) ->
                     case End > Start of
                         true ->
                             case {Field, ReturnTerms} of
-                                {?KEYFIELD, _} ->
+                                {?KEYFIELD, true} ->
                                     %% Not a range query where we can return the index term, since
                                     %% it is the Key itself
-                                    {ok, {range, IndexField1, Start, End}};
+                                    {ok, {range, IndexField1, Start, End, return_body}};
                                 {_, true} ->
                                     {ok, {range, IndexField1, Start, End, true}};
                                 {_, false} ->

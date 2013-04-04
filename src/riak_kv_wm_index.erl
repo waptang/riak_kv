@@ -103,7 +103,6 @@ malformed_request(RD, Ctx) ->
     case {validate_max(MaxResults0), riak_index:to_index_query(IndexField, Args2, CanReturnTerms, Continuation)} of
         {{true, MaxResults}, {ok, Query}} ->
             %% Request is valid.
-            ResultFilterFun = riak_index:result_filter(Continuation),
             NewCtx = Ctx#ctx{
                        bucket = Bucket,
                        index_query = Query,
@@ -244,9 +243,16 @@ encode_results(Results, true, Continuation) ->
     JsonKeys2 = {struct, [{?Q_KEYS, Results}] ++ Continuation},
     mochijson2:encode(JsonKeys2);
 encode_results(Results, false, Continuation) ->
-    JustTheKeys = [K || {_V, K} <- Results],
+    JustTheKeys = filter_values(Results),
     JsonKeys1 = {struct, [{?Q_KEYS, JustTheKeys}] ++ Continuation},
     mochijson2:encode(JsonKeys1).
+
+filter_values([]) ->
+    [];
+filter_values([{_, _} | _T]=Results) ->
+    [K || {_V, K} <- Results];
+filter_values(Results) ->
+    Results.
 
 last_result([]) ->
     undefined;

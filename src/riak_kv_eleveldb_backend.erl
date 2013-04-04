@@ -260,8 +260,21 @@ fold_keys(FoldKeysFun, Acc, Opts, #state{fold_opts=FoldOpts,
 fold_objects(FoldObjectsFun, Acc, Opts, #state{fold_opts=FoldOpts,
                                                ref=Ref}) ->
     Bucket =  proplists:get_value(bucket, Opts),
-    FoldOpts1 = fold_opts(Bucket, FoldOpts),
-    FoldFun = fold_objects_fun(FoldObjectsFun, Bucket),
+    Index = lists:keyfind(index, 1, Opts),
+
+    Key = case Index of
+              false -> <<>>;
+              {range, <<"$keys">>, StartKey, _EndKey, return_body} -> StartKey;
+              _ -> <<>>
+          end,
+
+    Limiter = case Index of
+                  false -> Bucket;
+                  _ -> Index
+              end,
+
+    FoldOpts1 = fold_opts({Bucket, Key}, FoldOpts),
+    FoldFun = fold_objects_fun(FoldObjectsFun, Limiter),
     ObjectFolder =
         fun() ->
                 try
@@ -513,6 +526,23 @@ fold_keys_fun(_FoldKeysFun, Other) ->
 
 %% @private
 %% Return a function to fold over the objects on this backend
+fold_objects_fun(FoldObjectsFun, {index, FilterBucket, {range, <<"$key">>, StartKey, EndKey, return_body}}) ->
+    %% 2I range query on special $key field...
+    fun({StorageKey, Value}, Acc) ->
+            case from_object_key(StorageKey) of
+                {Bucket, Key} when FilterBucket == Bucket,
+                                   StartKey =< Key, %% maybe should just be <
+                                   EndKey >= Key ->
+                    try
+                        FoldObjectsFun(Bucket, {o, Key, Value}, Acc)
+                    catch
+                        stop_fold ->
+                            throw({break, Acc})
+                    end;
+                _ ->
+                    throw({break, Acc})
+            end
+    end;
 fold_objects_fun(FoldObjectsFun, FilterBucket) ->
     %% 2I does not support fold objects at this time, so this is much
     %% simpler than fold_keys_fun.
@@ -531,8 +561,12 @@ fold_objects_fun(FoldObjectsFun, FilterBucket) ->
 %% bucket is defined.
 fold_opts(undefined, FoldOpts) ->
     FoldOpts;
+%% @HACK Use index key
+fold_opts({Bucket, Key}, FoldOpts) ->
+    BKey = sext:encode({Bucket, Key}),
+    [{first_key, BKey} | FoldOpts];
 fold_opts(Bucket, FoldOpts) ->
-    BKey = sext:encode({Bucket, <<>>}),
+    BKey = sext:encode(Bucket, <<>>),
     [{first_key, BKey} | FoldOpts].
 
 

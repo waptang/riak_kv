@@ -602,7 +602,14 @@ handle_coverage_index(Bucket, ItemFilter, Query,
             ResultFun = ResultFunFun(Bucket, Sender),
             Opts = [{index, Bucket, Query},
                     {bucket, Bucket}],
-            handle_coverage_keyfold(Bucket, ItemFilter, ResultFun,
+
+            FoldType =  case Query of
+                            {range, <<"$key">>, _StartKey, _EndKey, return_body} ->
+                                fold_objects;
+                            _ -> fold_keys
+                        end,
+
+            handle_coverage_keyfold(FoldType, Bucket, ItemFilter, ResultFun,
                                     FilterVNodes, Sender, Opts, State);
         false ->
             {reply, {error, {indexes_not_supported, Mod}}, State}
@@ -610,6 +617,13 @@ handle_coverage_index(Bucket, ItemFilter, Query,
 
 %% Convenience for handling both v3 and v4 coverage-based key fold operations
 handle_coverage_keyfold(Bucket, ItemFilter, ResultFun,
+                        FilterVNodes, Sender, Opts0,
+                        State) ->
+    handle_coverage_keyfold(fold_keys, Bucket, ItemFilter, ResultFun,
+                            FilterVNodes, Sender, Opts0, State).
+
+%% As before, but coverage fun can specify fold_keys or fold_objects
+handle_coverage_keyfold(FoldType, Bucket, ItemFilter, ResultFun,
                         FilterVNodes, Sender, Opts0,
                         State=#state{async_folding=AsyncFolding,
                                      idx=Index,
@@ -625,13 +639,13 @@ handle_coverage_keyfold(Bucket, ItemFilter, ResultFun,
     FinishFun = finish_fun(BufferMod, Sender),
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
     AsyncBackend = lists:member(async_fold, Capabilities),
-    case AsyncFolding andalso AsyncBackend of
+    Opts = case AsyncFolding andalso AsyncBackend of
         true ->
-            Opts = [async_fold | Opts0];
+            [async_fold | Opts0];
         false ->
-            Opts = Opts0
+            Opts0
     end,
-    case list(FoldFun, FinishFun, Mod, fold_keys, ModState, Opts, Buffer) of
+    case list(FoldFun, FinishFun, Mod, FoldType, ModState, Opts, Buffer) of
         {async, AsyncWork} ->
             {async, {fold, AsyncWork, FinishFun}, Sender, State};
         _ ->
