@@ -46,7 +46,7 @@
          process/2,
          process_stream/3]).
 
--record(state, {client}).
+-record(state, {client, req_id, bucket}).
 
 %% @doc init/0 callback. Returns the service internal start
 %% state.
@@ -82,11 +82,22 @@ process(#rpbindexreq{bucket=Bucket, index=Index, qtype=eq, key=SKey}, #state{cli
         {error, Reason} ->
             {error, {format, Reason}, State}
     end;
+process(#rpbindexreq{bucket=Bucket, index= <<"$key">>, qtype=range,
+                     range_min=Min, range_max=Max,
+                     return_terms=ReturnBody, max_results=MaxResults},
+              #state{client=Client}=State) ->
+    case riak_index:to_index_query(<<"$key">>, [Min, Max], ReturnBody, undefined) of
+        {ok, Query} ->
+            {ok, ReqId} = Client:stream_get_index(Bucket, Query, [{max_results, MaxResults}]),
+            {reply, {stream, ReqId}, State#state{req_id=ReqId, bucket=Bucket}};
+        {error, QReason} ->
+            {error, {format, QReason, State}}
+    end;
 process(#rpbindexreq{bucket=Bucket, index=Index, qtype=range,
-                     range_min=Min, range_max=Max, return_terms=ReturnTerms0}, #state{client=Client}=State) ->
+                     range_min=Min, range_max=Max,
+                     return_terms=ReturnTerms}, #state{client=Client}=State) ->
     CanReturnTerms = riak_core_capability:get({riak_kv, '2i_return_terms'}, false),
-    ReturnTerms = normalize_bool(ReturnTerms0),
-    case riak_index:to_index_query(Index, [Min, Max], CanReturnTerms) of
+    case riak_index:to_index_query(Index, [Min, Max], CanReturnTerms, undefined) of
         {ok, Query} ->
             case {ReturnTerms, Client:get_index(Bucket, Query)} of
                 {false, {ok, Results}} ->
@@ -101,12 +112,27 @@ process(#rpbindexreq{bucket=Bucket, index=Index, qtype=range,
             {error, {format, Reason}, State}
     end.
 
-normalize_bool(B) when is_boolean(B) ->
-    B;
-normalize_bool(_) ->
-    false.
-
 %% @doc process_stream/3 callback. This service does not create any
 %% streaming responses and so ignores all incoming messages.
-process_stream(_,_,State) ->
+process_stream({ReqId, done}, ReqId, State=#state{req_id=ReqId}) ->
+    {done, #rpbindexresp{done=1}, State};
+process_stream({ReqId, {results, []}}, ReqId, State=#state{req_id=ReqId}) ->
+    {ignore, State};
+process_stream({ReqId, {results, Results}}, ReqId, State=#state{req_id=ReqId, bucket=Bucket}) ->
+    %% results are {o, Key, Binary} where binary is a riak object
+    BodyResults = [encode_object_result(Bucket, {K, V}) || {o, K, V} <- Results],
+    {reply, #rpbindexresp{objects=BodyResults}, State};
+process_stream({ReqId, Error}, ReqId, State=#state{req_id=ReqId}) ->
+    {error, {format, Error}, State#state{req_id=undefined}};
+process_stream(_, _,  State) ->
     {ignore, State}.
+
+encode_object_result(B, {K, V}) ->
+    RObj = riak_object:from_binary(B, K, V),
+    Contents = riak_pb_kv_codec:encode_contents(riak_object:get_contents(RObj)),
+    VClock = pbify_rpbvc(riak_object:vclock(RObj)),
+    GetResp = #rpbgetresp{vclock=VClock, content=Contents},
+    #rpbindexobject{key=K, object=GetResp}.
+
+pbify_rpbvc(Vc) ->
+    zlib:zip(term_to_binary(Vc)).

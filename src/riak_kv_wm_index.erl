@@ -95,10 +95,15 @@ malformed_request(RD, Ctx) ->
     Args2 = [list_to_binary(riak_kv_wm_utils:maybe_decode_uri(RD, X)) || X <- Args1],
     ReturnTerms0 = wrq:get_qs_value(?Q_2I_RETURNTERMS, "false", RD),
     ReturnTerms = normalize_boolean(string:to_lower(ReturnTerms0)),
-    CanReturnTerms = riak_core_capability:get({riak_kv, '2i_return_terms'}, false), %% Move into riak_index
+    CanReturnTerms0 = riak_core_capability:get({riak_kv, '2i_return_terms'}, false), %% Move into riak_index
     MaxResults0 = wrq:get_qs_value(?Q_2I_MAX_RESULTS, ?ALL_2I_RESULTS, RD),
     Continuation0 = wrq:get_qs_value(?Q_2I_CONTINUATION, undefined, RD),
     Continuation = decode_contintuation(Continuation0),
+    CanReturnTerms = case IndexField of
+                         <<"$key">> -> (CanReturnTerms0 and ReturnTerms);
+                         _ -> CanReturnTerms0
+                     end,
+
 
     case {validate_max(MaxResults0), riak_index:to_index_query(IndexField, Args2, CanReturnTerms, Continuation)} of
         {{true, MaxResults}, {ok, Query}} ->

@@ -603,7 +603,7 @@ handle_coverage_index(Bucket, ItemFilter, Query,
             Opts = [{index, Bucket, Query},
                     {bucket, Bucket}],
 
-            FoldType =  case Query of
+            FoldType =  case Query of %%% @HACK
                             {range, <<"$key">>, _StartKey, _EndKey, return_body} ->
                                 fold_objects;
                             _ -> fold_keys

@@ -264,7 +264,7 @@ fold_objects(FoldObjectsFun, Acc, Opts, #state{fold_opts=FoldOpts,
 
     Key = case Index of
               false -> <<>>;
-              {range, <<"$keys">>, StartKey, _EndKey, return_body} -> StartKey;
+              {index, _Bucket, {range, <<"$key">>, StartKey, _EndKey, return_body}} -> StartKey;
               _ -> <<>>
           end,
 
@@ -563,10 +563,10 @@ fold_opts(undefined, FoldOpts) ->
     FoldOpts;
 %% @HACK Use index key
 fold_opts({Bucket, Key}, FoldOpts) ->
-    BKey = sext:encode({Bucket, Key}),
+    BKey = to_object_key(Bucket, Key),
     [{first_key, BKey} | FoldOpts];
 fold_opts(Bucket, FoldOpts) ->
-    BKey = sext:encode(Bucket, <<>>),
+    BKey = to_object_key(Bucket, <<>>),
     [{first_key, BKey} | FoldOpts].
 
 
