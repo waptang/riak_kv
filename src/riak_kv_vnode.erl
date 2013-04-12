@@ -744,7 +744,7 @@ perform_put({false, _Obj},
             #putargs{returnbody=false,
                      reqid=ReqId}) ->
     {{dw, Idx, ReqId}, State};
-perform_put({true, Obj},
+perform_put({true, Obj0},
             #state{idx=Idx,
                    mod=Mod,
                    modstate=ModState}=State,
@@ -752,6 +752,14 @@ perform_put({true, Obj},
                      bkey={Bucket, Key},
                      reqid=ReqID,
                      index_specs=IndexSpecs}) ->
+    {PrunedCount, Obj} = prune_siblings(Obj0, 5),
+    case PrunedCount > 0 of
+        true ->
+            lager:info("Pruned ~b siblings for ~p/~p", [PrunedCount,
+                    riak_object:bucket(Obj), riak_object:key(Obj)]);
+        false ->
+            ok
+    end,
     Val = term_to_binary(Obj),
     case Mod:put(Bucket, Key, IndexSpecs, Val, ModState) of
         {ok, UpdModState} ->
@@ -765,6 +773,21 @@ perform_put({true, Obj},
             Reply = {fail, Idx, ReqID}
     end,
     {Reply, State#state{modstate=UpdModState}}.
+
+prune_siblings(Obj, KeepCount) ->
+    Siblings = riak_object:get_contents(Obj),
+    case length(Siblings) < KeepCount of
+        true ->
+            {0, Obj};
+        false ->
+            %% sort the siblings and discard all but the KeepCount newest
+            SortedSiblings = lists:sort(fun({MD1, _Value1}, {MD2, _Value2}) ->
+                        dict:fetch(<<"X-Riak-Last-Modified">>, MD1) >=
+                        dict:fetch(<<"X-Riak-Last-Modified">>, MD2)
+                end, Siblings),
+            KeepSiblings = lists:sublist(SortedSiblings, KeepCount),
+            {length(Siblings) - KeepCount, riak_object:set_contents(Obj, KeepSiblings)}
+    end.
 
 %% @private
 %% enforce allow_mult bucket property so that no backend ever stores
@@ -1503,5 +1526,18 @@ flush_msgs() ->
         0 ->
             ok
     end.
+
+prune_test() ->
+    Obj = riak_object:reconcile([riak_object:new(<<"foo">>, <<"bar">>, <<"baz">>,
+                dict:store(<<"X-Riak-Last-Modified">>, now(), dict:new())) ||
+            _ <- lists:seq(1, 100)], true),
+    ?assertEqual(100, length(riak_object:get_contents(Obj))),
+    {Dropped, NewObj} = prune_siblings(Obj, 5),
+    ?assertEqual(95, Dropped),
+    ?assertEqual(5, length(riak_object:get_contents(NewObj))),
+    %% check we got the 5 newest
+    ?assertEqual(riak_object:get_contents(NewObj),
+        lists:sublist(lists:reverse(riak_object:get_contents(Obj)), 5)),
+    ok.
 
 -endif.
