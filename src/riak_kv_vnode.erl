@@ -51,6 +51,7 @@
          is_empty/1,
          delete/1,
          handle_handoff_command/3,
+         handle_overload_command/3,
          handoff_starting/2,
          handoff_cancelled/1,
          handoff_finished/2,
@@ -526,6 +527,16 @@ handle_handoff_command(Req=?KV_PUT_REQ{}, Sender, State) ->
     {forward, NewState};
 %% Handle all unspecified cases locally without forwarding
 handle_handoff_command(Req, Sender, State) ->
+    handle_command(Req, Sender, State).
+
+handle_overload_command(?KV_PUT_REQ{},
+                        _Sender, State=#state{idx=Idx}) ->
+    {reply, {fail, Idx, overload}, State}; % subvert ReqId for error, ignored by older Riak
+handle_overload_command(?KV_GET_REQ{req_id=ReqID},_Sender,State=#state{idx=Idx}) ->
+    {reply, {r, {error, overload}, Idx, ReqID}, State};
+handle_overload_command(Req, Sender, State) ->
+    %% Handle other requests normally for now - will fill in the list of
+    %% other failures later.
     handle_command(Req, Sender, State).
 
 
