@@ -156,6 +156,7 @@ init([From, RObj, Options]) ->
                                            robj = RObj,
                                            bkey = BKey,
                                            options = Options}),
+    riak_kv_get_put_monitor:put_fsm_spawned(self()),
     riak_core_dtrace:put_tag(io_lib:format("~p,~p", [Bucket, Key])),
     case riak_kv_util:is_x_deleted(RObj) of
         true  ->
@@ -206,13 +207,14 @@ prepare(timeout, StateData0 = #state{from = From, robj = RObj,
             process_reply({error, all_nodes_down}, StateData0);
         {_, true} ->
             %% This node is not in the preference list
-            %% forward on to the first node
-            [{{_Idx, CoordNode},_Type}|_] = Preflist2,
+            %% forward on to a random node
+            ListPos = crypto:rand_uniform(1, length(Preflist2)),
+            {{_Idx, CoordNode},_Type} = lists:nth(ListPos, Preflist2),
             _Timeout = get_option(timeout, Options, ?DEFAULT_TIMEOUT),
             ?DTRACE(?C_PUT_FSM_PREPARE, [1],
                     ["prepare", atom2list(CoordNode)]),
             try
-                 proc_lib:spawn(CoordNode,riak_kv_put_fsm,start,[From,RObj,Options]),
+                 proc_lib:spawn(CoordNode,riak_kv_put_fsm,start_link,[From,RObj,Options]),
                  ?DTRACE(?C_PUT_FSM_PREPARE, [2],
                             ["prepare", atom2list(CoordNode)]),
                  riak_kv_stat:update(coord_redir),
@@ -374,11 +376,11 @@ waiting_local_vnode(request_timeout, StateData) ->
 waiting_local_vnode(Result, StateData = #state{putcore = PutCore}) ->
     UpdPutCore1 = riak_kv_put_core:add_result(Result, PutCore),
     case Result of
-        {fail, Idx, _ReqId} ->
+        {fail, Idx, ReqIdSubvertedToReason} ->
             ?DTRACE(?C_PUT_FSM_WAITING_LOCAL_VNODE, [-1],
                     [integer_to_list(Idx)]),
             %% Local vnode failure is enough to sink whole operation
-            process_reply({error, local_put_failed}, StateData#state{putcore = UpdPutCore1});
+            process_reply({error, ReqIdSubvertedToReason}, StateData#state{putcore = UpdPutCore1});
         {w, Idx, _ReqId} ->
             ?DTRACE(?C_PUT_FSM_WAITING_LOCAL_VNODE, [1],
                     [integer_to_list(Idx)]),
@@ -648,7 +650,7 @@ update_last_modified(RObj) ->
     %% which should serve the same purpose.  It was possible to generate two
     %% objects with the same vclock on 0.14.2 if the same clientid was used in
     %% the same second.  It can be revisited post-1.0.0.
-    Now = erlang:now(),
+    Now = os:timestamp(),
     NewMD = dict:store(?MD_VTAG, make_vtag(Now),
                        dict:store(?MD_LASTMOD, Now, MD0)),
     riak_object:update_metadata(RObj, NewMD).
