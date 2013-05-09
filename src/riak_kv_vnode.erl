@@ -91,7 +91,8 @@
                 key_buf_size :: pos_integer(),
                 async_folding :: boolean(),
                 in_handoff = false :: boolean(),
-                hashtrees :: pid() }).
+                hashtrees :: pid(),
+                appmeter :: pid() }).
 
 -type index_op() :: add | remove.
 -type index_value() :: integer() | binary().
@@ -354,14 +355,21 @@ init([Index]) ->
                            index_buf_size=IndexBufSize,
                            key_buf_size=KeyBufSize,
                            mrjobs=dict:new()},
+            State1 = case appmeter:proxy() of
+                {ok, Appmeter} ->
+                    State#state{appmeter=Appmeter};
+                {error, Reason} ->
+                    lager:error("Failed to start appmeter proxy: ~p", [Reason]),
+                    State
+            end,
             case AsyncFolding of
                 true ->
                     %% Create worker pool initialization tuple
                     FoldWorkerPool = {pool, riak_kv_worker, WorkerPoolSize, []},
-                    State2 = maybe_create_hashtrees(State),
+                    State2 = maybe_create_hashtrees(State1),
                     {ok, State2, [FoldWorkerPool]};
                 false ->
-                    {ok, State}
+                    {ok, State1}
             end;
         {error, Reason} ->
             lager:error("Failed to start ~p Reason: ~p",
@@ -385,7 +393,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
     StartTS = os:timestamp(),
     riak_core_vnode:reply(Sender, {w, Idx, ReqId}),
     UpdState = do_put(Sender, BKey,  Object, ReqId, StartTime, Options, State),
-    update_vnode_stats(vnode_put, Idx, StartTS),
+    update_vnode_stats(vnode_put, Idx, StartTS, State#state.appmeter),
     {noreply, UpdState};
 
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},Sender,State) ->
@@ -815,6 +823,14 @@ handle_info({'DOWN', _, _, Pid, _}, State=#state{hashtrees=Pid}) ->
     State2 = State#state{hashtrees=undefined},
     State3 = maybe_create_hashtrees(State2),
     {ok, State3};
+handle_info({'DOWN', _, _, Pid, _}, State=#state{appmeter=Pid}) ->
+    case appmeter:proxy() of
+        {ok, Appmeter} ->
+            {ok, State#state{appmeter=Appmeter}};
+        {error, Reason} ->
+            lager:error("Failed to start appmeter proxy: ~p", [Reason]),
+            {ok, State#state{appmeter=undefined}}
+    end;
 handle_info({'DOWN', _, _, _, _}, State) ->
     {ok, State};
 handle_info({final_delete, BKey, RObjHash}, State = #state{mod=Mod, modstate=ModState}) ->
@@ -872,7 +888,9 @@ do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
     {Reply, UpdState} = perform_put(PrepPutRes, State, UpdPutArgs),
     riak_core_vnode:reply(Sender, Reply),
 
-    update_index_write_stats(UpdPutArgs#putargs.is_index, UpdPutArgs#putargs.index_specs),
+    update_index_write_stats(UpdPutArgs#putargs.is_index,
+                             UpdPutArgs#putargs.index_specs,
+                             State#state.appmeter),
     UpdState.
 
 do_backend_delete(BKey, RObj, State = #state{mod = Mod, modstate = ModState}) ->
@@ -887,7 +905,7 @@ do_backend_delete(BKey, RObj, State = #state{mod = Mod, modstate = ModState}) ->
     case Mod:delete(Bucket, Key, IndexSpecs, ModState) of
         {ok, UpdModState} ->
             riak_kv_index_hashtree:delete(BKey, State#state.hashtrees),
-            update_index_delete_stats(IndexSpecs),
+            update_index_delete_stats(IndexSpecs, State#state.appmeter),
             State#state{modstate = UpdModState};
         {error, _Reason, UpdModState} ->
             State#state{modstate = UpdModState}
@@ -1114,7 +1132,7 @@ do_get(_Sender, BKey, ReqID,
        State=#state{idx=Idx,mod=Mod,modstate=ModState}) ->
     StartTS = os:timestamp(),
     Retval = do_get_term(BKey, Mod, ModState),
-    update_vnode_stats(vnode_get, Idx, StartTS),
+    update_vnode_stats(vnode_get, Idx, StartTS, State#state.appmeter),
     {reply, {r, Retval, Idx, ReqID}, State}.
 
 %% @private
@@ -1317,8 +1335,8 @@ do_diffobj_put({Bucket, Key}, DiffObj,
             case Res of
                 {ok, _UpdModState} ->
                     update_hashtree(Bucket, Key, Val, StateData),
-                    update_index_write_stats(IndexBackend, IndexSpecs),
-                    update_vnode_stats(vnode_put, Idx, StartTS);
+                    update_index_write_stats(IndexBackend, IndexSpecs, StateData#state.appmeter),
+                    update_vnode_stats(vnode_put, Idx, StartTS, StateData#state.appmeter);
                 _ -> nop
             end,
             Res;
@@ -1344,8 +1362,8 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                     case Res of
                         {ok, _UpdModState} ->
                             update_hashtree(Bucket, Key, Val, StateData),
-                            update_index_write_stats(IndexBackend, IndexSpecs),
-                            update_vnode_stats(vnode_put, Idx, StartTS);
+                            update_index_write_stats(IndexBackend, IndexSpecs, StateData#state.appmeter),
+                            update_vnode_stats(vnode_put, Idx, StartTS, StateData#state.appmeter);
                         _ ->
                             nop
                     end,
@@ -1483,21 +1501,36 @@ wait_for_vnode_status_results(PrefLists, ReqId, Acc) ->
     end.
 
 %% @private
--spec update_vnode_stats(vnode_get | vnode_put, partition(), erlang:timestamp()) ->
+-spec update_vnode_stats(vnode_get | vnode_put, partition(), erlang:timestamp(), pid()) ->
                                 ok.
-update_vnode_stats(Op, Idx, StartTS) ->
-    riak_kv_stat:update({Op, Idx, timer:now_diff( os:timestamp(), StartTS)}).
+update_vnode_stats(Op, Idx, StartTS, Appmeter) ->
+    Latency = timer:now_diff( os:timestamp(), StartTS),
+    Name = case Op of
+        vnode_get ->
+            ["riak.vnode.get.", integer_to_list(Idx)];
+        vnode_put ->
+            ["riak.vnode.put.", integer_to_list(Idx)]
+    end,
+    appmeter_proxy:send_one(Appmeter, {measure, Name, Latency}),
+    riak_kv_stat:update({Op, Idx, Latency}).
 
 %% @private
-update_index_write_stats(false, _IndexSpecs) ->
+update_index_write_stats(false, _IndexSpecs, _Appmeter) ->
     ok;
-update_index_write_stats(true, IndexSpecs) ->
+update_index_write_stats(true, IndexSpecs, Appmeter) ->
     {Added, Removed} = count_index_specs(IndexSpecs),
+    Data = [{count, "riak.vnode.index.writes", 1},
+            {count, "riak.vnode.index.writes.postings", Added},
+            {count, "riak.vnode.index.deletes.postings", Removed}],
+    appmeter_proxy:send_many(Appmeter, Data),
     riak_kv_stat:update({vnode_index_write, Added, Removed}).
 
 %% @private
-update_index_delete_stats(IndexSpecs) ->
+update_index_delete_stats(IndexSpecs, Appmeter) ->
     {_Added, Removed} = count_index_specs(IndexSpecs),
+    Data = [{count, "riak.vnode.index.deletes", Removed},
+            {count, "riak.vnode.index.deletes.postings", Removed}],
+    appmeter_proxy:send_many(Appmeter, Data),
     riak_kv_stat:update({vnode_index_delete, Removed}).
 
 %% @private

@@ -15,7 +15,8 @@
                   mochiweb,
                   webmachine,
                   os_mon,
-                  riak_pipe
+                  riak_pipe,
+                  appmeter
                  ]},
   {registered, []},
   {mod, {riak_kv_app, []}},
