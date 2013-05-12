@@ -167,6 +167,13 @@ start(_Type, _StartArgs) ->
             %% Add routes to webmachine
             [ webmachine_router:add_route(R)
               || R <- lists:reverse(riak_kv_web:dispatch_table()) ],
+
+
+            %% %%% EGREGIOUS HACK
+            %% BEMod = app_helper:get_env(riak_kv, storage_backend),
+            %% BEConf = app_helper:get_env(riak_kv),
+            %% _SomePid = BEMod:start(BEConf),
+
             {ok, Pid};
         {error, Reason} ->
             {error, Reason}

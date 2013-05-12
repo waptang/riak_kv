@@ -88,6 +88,13 @@ init([]) ->
                       {riak_kv_entropy_manager, start_link, []},
                       permanent, 30000, worker, [riak_kv_entropy_manager]},
 
+    VnodeWorkerPool = {riak_kv_vnode_worker,
+                       {riak_kv_vnode_worker, start_pool, []},
+                       permanent, 30000, worker, [riak_kv_vnode_worker]},
+    LeveldbBackend = {riak_kv_eleveldb_backend3,
+                      {riak_kv_eleveldb_backend3, start_link, [[]]},
+                      permanent, 30000, worker, [riak_kv_eleveldb_backend3]},
+
     % Figure out which processes we should run...
     HasStorageBackend = (app_helper:get_env(riak_kv, storage_backend) /= undefined),
 
@@ -105,7 +112,9 @@ init([]) ->
         JSSup,
         MapJSPool,
         ReduceJSPool,
-        HookJSPool
+        HookJSPool,
+        VnodeWorkerPool,
+        LeveldbBackend
     ]),
 
     % Run the proesses...
