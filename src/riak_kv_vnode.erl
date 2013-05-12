@@ -94,6 +94,7 @@
                 async_folding :: boolean(),
                 in_handoff = false :: boolean(),
                 hashtrees :: pid(),
+                active = dict:new(),
                 worker_mons = dict:new()}).
 
 %% -type index_op() :: add | remove.
@@ -370,22 +371,32 @@ handle_command(?KV_PUT_REQ{bkey=BKey} = Req,
                Sender, State=#state{idx=Idx, vnodeid=VId,
                                     mod=Mod, modstate=ModState,
                                     hashtrees=Trees}) ->
-    StartTS = os:timestamp(),
-    BE = {Mod, ModState},
-    Worker = riak_kv_vnode_worker:vput(Req, Sender, StartTS, Idx, VId, BE, Trees),
-    Fail = fun(Reason) ->
-                   riak_core_vnode:reply(Sender, {dw, Idx, {error, {worker, Reason}}})
-           end,
-    {noreply, monitor_worker(BKey, Fail, Worker, State)};
+    case check_bkey(BKey, Req, Sender, State) of
+        {busy, State2} ->
+            {noreply, State2};
+        {ok, State2} ->
+            StartTS = os:timestamp(),
+            BE = {Mod, ModState},
+            Worker = riak_kv_vnode_worker:vput(Req, Sender, StartTS, Idx, VId, BE, Trees),
+            Fail = fun(Reason) ->
+                           riak_core_vnode:reply(Sender, {dw, Idx, {error, {worker, Reason}}})
+                   end,
+            {noreply, monitor_worker(BKey, Fail, Worker, State2)}
+    end;
 handle_command(?KV_GET_REQ{bkey=BKey} = Req,Sender,
                #state{idx=Idx, mod = Mod, modstate = ModState} = State) ->
-    StartTS = os:timestamp(),
-    BE = {Mod, ModState},
-    Worker = riak_kv_vnode_worker:vget(Req, Sender, StartTS, Idx, BE),
-    Fail = fun(Reason) ->
-                   riak_core_vnode:reply(Sender, {r, {error, {worker, Reason}}, Idx})
-           end,
-    {noreply, monitor_worker(BKey, Fail, Worker, State)};
+    case check_bkey(BKey, Req, Sender, State) of
+        {busy, State2} ->
+            {noreply, State2}; %% handle_command will be re-called once free
+        {ok, State2} ->
+            StartTS = os:timestamp(),
+            BE = {Mod, ModState},
+            Worker = riak_kv_vnode_worker:vget(Req, Sender, StartTS, Idx, BE),
+            Fail = fun(Reason) ->
+                           riak_core_vnode:reply(Sender, {r, {error, {worker, Reason}}, Idx})
+                   end,
+            {noreply, monitor_worker(BKey, Fail, Worker, State2)}
+    end;
 %% handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Caller}, _Sender,
 %%                State=#state{async_folding=AsyncFolding,
 %%                             key_buf_size=BufferSize,
@@ -813,19 +824,34 @@ handle_info({'DOWN', _, _, Pid, _}, State=#state{hashtrees=Pid}) ->
     State2 = State#state{hashtrees=undefined},
     State3 = maybe_create_hashtrees(State2),
     {ok, State3};
-handle_info({'DOWN', MRef, _, Pid, Reason}, State=#state{worker_mons = WorkerMons}) ->
+handle_info({'DOWN', MRef, _, Pid, Reason}, State=#state{active = Active,
+                                                         worker_mons = WorkerMons}) ->
     case dict:find(MRef, WorkerMons) of
-        {ok, {_BKey, Fail}} ->
+        {ok, {BKey, Fail}} ->
             case Reason of
                 normal ->
                     ok;
                 _ ->
                     Fail(Reason)
             end,
-            %% TODO: Kick off anything queued for bkey
-            {ok, State#state{worker_mons = dict:erase(MRef, WorkerMons)}};
+            WorkerMons2 = dict:erase(MRef, WorkerMons),
+            %% Check if anything else is queued against this bkey
+            {ok, [_CurReq | Rest]} = dict:find(BKey, Active),
+            case Rest of
+                [] ->
+                    %% This bkey all done
+                    {ok, State#state{worker_mons = WorkerMons2,
+                                     active = dict:erase(BKey, Active)}};
+                [{NextReq, Sender} | _] ->
+                    {noreply, State2} =
+                        handle_command(NextReq, Sender,
+                                       State#state{worker_mons = WorkerMons2,
+                                                   active = dict:store(BKey, Rest, Active)}),
+                    {ok, State2}
+            end;
+
         error ->
-            lager:info("Unexepected monitor ~p fired for ~p - ~p\n",
+            lager:info("Unexpected monitor ~p fired for ~p - ~p\n",
                        [MRef, Pid, Reason]),
             {ok, State}
     end.
@@ -856,6 +882,15 @@ handle_exit(_Pid, Reason, State) ->
     {stop, linked_process_crash, State}.
 
 %% @private
+
+check_bkey(BKey, Req, Sender, #state{active = Active} = State) ->
+    BKeyState = case dict:find(BKey, Active) of
+                    error ->
+                        ok; % No entry if nothing active
+                    {ok, _Reqs} ->
+                        busy % Any entry means already active
+                end,
+    {BKeyState, State#state{active = dict:append_list(BKey, [{Req, Sender}], Active)}}.
 
 monitor_worker(BKey, Fail, Worker, State = #state{worker_mons = WorkerMons}) ->
     %% TODO, some kind of monitor against this bkey.
