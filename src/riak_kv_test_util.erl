@@ -219,11 +219,12 @@ cleanup(Test, CleanupFun, _) ->
 -spec dep_apps(Test::string(), Extra::fun((load | start | stop) -> any())) -> [ atom() | fun() ].
 dep_apps(Test, Extra) ->
     Silencer = fun(load) ->
-                       %% Silence logging junk
-                       application:set_env(kernel, error_logger, silent),
-                       filelib:ensure_dir(Test ++ "/log/sasl.log"),
-                       application:set_env(sasl, sasl_error_logger, {file, Test++"/log/sasl.log"}),
-                       error_logger:tty(false);
+                       %% %% Silence logging junk
+                       %% application:set_env(kernel, error_logger, silent),
+                       %% filelib:ensure_dir(Test ++ "/log/sasl.log"),
+                       %% application:set_env(sasl, sasl_error_logger, {file, Test++"/log/sasl.log"}),
+                       %% error_logger:tty(false);
+                       ok;
                   (_) -> ok
                end,
 
