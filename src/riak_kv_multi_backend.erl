@@ -45,6 +45,7 @@
          fixed_index_status/1]).
 
 -ifdef(TEST).
+-compile(export_all).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
@@ -52,7 +53,7 @@
 -define(CAPABILITIES, [async_fold, index_reformat]).
 
 -record (state, {backends :: [{atom(), atom(), term()}],
-                 default_backend :: atom()}).
+                 num_backends :: integer()}).
 
 -type state() :: #state{}.
 -type config() :: [{atom(), term()}].
@@ -106,7 +107,8 @@ capabilities(State) ->
                 {ok, S1} = Mod:capabilities(ModState),
                 ordsets:from_list(S1)
         end,
-    AllCaps = [F(Mod, ModState) || {_, Mod, ModState} <- State#state.backends],
+    AllCaps = [F(Mod, ModState) ||
+                  {_, Mod, ModState} <- tuple_to_list(State#state.backends)],
     Caps1 = ordsets:intersection(AllCaps),
     Caps2 = ordsets:to_list(Caps1),
 
@@ -116,7 +118,7 @@ capabilities(State) ->
 %% @doc Return the capabilities of the backend.
 -spec capabilities(riak_object:bucket(), state()) -> {ok, [atom()]}.
 capabilities(Bucket, State) when is_binary(Bucket) ->
-    {_Name, Mod, ModState} = get_backend(Bucket, State),
+    {_Name, Mod, ModState} = get_backend(Bucket, <<>>, State),
     Mod:capabilities(ModState);
 capabilities(_Bucket, State) ->
     capabilities(State).
@@ -137,28 +139,18 @@ start(Partition, Config) ->
                      multi_backend,
                      list_is_empty}};
        true ->
-            {First, _, _} = hd(Defs),
-
             %% Get the default
-            DefaultBackend = app_helper:get_prop_or_env(multi_backend_default, Config, riak_kv, First),
-            case lists:keymember(DefaultBackend, 1, Defs) of
-                true ->
                     %% Start the backends
                     BackendFun = start_backend_fun(Partition),
                     {Backends, Errors} =
                         lists:foldl(BackendFun, {[], []}, Defs),
                     case Errors of
                         [] ->
-                            {ok, #state{backends=Backends,
-                                        default_backend=DefaultBackend}};
+                            {ok, #state{backends=list_to_tuple(Backends),
+                                        num_backends=length(Backends)}};
                         _ ->
                             {error, Errors}
-                    end;
-                false ->
-                    {error, {invalid_config_setting,
-                             multi_backend_default,
-                             backend_not_found}}
-            end
+                    end
     end.
 
 %% @private
@@ -199,7 +191,8 @@ start_backend(Name, Module, Partition, Config) ->
 %% @doc Stop the backends
 -spec stop(state()) -> ok.
 stop(#state{backends=Backends}) ->
-    [Module:stop(SubState) || {_, Module, SubState} <- Backends],
+    [Module:stop(SubState) ||
+        {_, Module, SubState} <- tuple_to_list(Backends)],
     ok.
 
 %% @doc Retrieve an object from the backend
@@ -208,13 +201,13 @@ stop(#state{backends=Backends}) ->
                  {ok, not_found, state()} |
                  {error, term(), state()}.
 get(Bucket, Key, State) ->
-    {Name, Module, SubState} = get_backend(Bucket, State),
+    {Name, Module, SubState} = get_backend(Bucket, Key, State),
     case Module:get(Bucket, Key, SubState) of
         {ok, Value, NewSubState} ->
-            NewState = update_backend_state(Name, Module, NewSubState, State),
+            NewState = update_backend_state(Name, Module, Bucket, Key, NewSubState, State),
             {ok, Value, NewState};
         {error, Reason, NewSubState} ->
-            NewState = update_backend_state(Name, Module, NewSubState, State),
+            NewState = update_backend_state(Name, Module, Bucket, Key, NewSubState, State),
             {error, Reason, NewState}
     end.
 
@@ -225,13 +218,13 @@ get(Bucket, Key, State) ->
                  {ok, state()} |
                  {error, term(), state()}.
 put(Bucket, PrimaryKey, IndexSpecs, Value, State) ->
-    {Name, Module, SubState} = get_backend(Bucket, State),
+    {Name, Module, SubState} = get_backend(Bucket, PrimaryKey, State),
     case Module:put(Bucket, PrimaryKey, IndexSpecs, Value, SubState) of
         {ok, NewSubState} ->
-            NewState = update_backend_state(Name, Module, NewSubState, State),
+            NewState = update_backend_state(Name, Module, Bucket, PrimaryKey, NewSubState, State),
             {ok, NewState};
         {error, Reason, NewSubState} ->
-            NewState = update_backend_state(Name, Module, NewSubState, State),
+            NewState = update_backend_state(Name, Module, Bucket, PrimaryKey, NewSubState, State),
             {error, Reason, NewState}
     end.
 
@@ -240,13 +233,13 @@ put(Bucket, PrimaryKey, IndexSpecs, Value, State) ->
                     {ok, state()} |
                     {error, term(), state()}.
 delete(Bucket, Key, IndexSpecs, State) ->
-    {Name, Module, SubState} = get_backend(Bucket, State),
+    {Name, Module, SubState} = get_backend(Bucket, Key, State),
     case Module:delete(Bucket, Key, IndexSpecs, SubState) of
         {ok, NewSubState} ->
-            NewState = update_backend_state(Name, Module, NewSubState, State),
+            NewState = update_backend_state(Name, Module, Bucket, Key, NewSubState, State),
             {ok, NewState};
         {error, Reason, NewSubState} ->
-            NewState = update_backend_state(Name, Module, NewSubState, State),
+            NewState = update_backend_state(Name, Module, Bucket, Key, NewSubState, State),
             {error, Reason, NewState}
     end.
 
@@ -295,14 +288,15 @@ drop(#state{backends=Backends}=State) ->
                           {error, Reason, NewSubState}
                   end
           end,
-    DropResults = [Fun(Backend) || Backend <- Backends],
+    DropResults = [Fun(Backend) || Backend <- tuple_to_list(Backends)],
     {Errors, UpdBackends} =
         lists:splitwith(fun error_filter/1, DropResults),
     case Errors of
         [] ->
-            {ok, State#state{backends=UpdBackends}};
+            {ok, State#state{backends=list_to_tuple(UpdBackends)}};
         _ ->
-            {error, Errors, State#state{backends=UpdBackends}}
+            {error, Errors, State#state{backends=list_to_tuple(UpdBackends),
+                                        num_backends=length(UpdBackends)}}
     end.
 
 %% @doc Returns true if the backend contains any
@@ -312,7 +306,7 @@ is_empty(#state{backends=Backends}) ->
     Fun = fun({_, Module, SubState}) ->
                   Module:is_empty(SubState)
           end,
-    lists:all(Fun, Backends).
+    lists:all(Fun, tuple_to_list(Backends)).
 
 %% @doc Get the status information for this backend
 -spec status(state()) -> [{atom(), term()}].
@@ -323,20 +317,23 @@ status(#state{backends=Backends}) ->
     %% breaking this API list of two tuples return,
     %% add the tuple {mod, Mod} to the status for each
     %% backend.
-    [{N, [{mod, Mod} | Mod:status(ModState)]} || {N, Mod, ModState} <- Backends].
+    [{N, [{mod, Mod} | Mod:status(ModState)]} ||
+        {N, Mod, ModState} <- tuple_to_list(Backends)].
 
 %% @doc Register an asynchronous callback
 -spec callback(reference(), any(), state()) -> {ok, state()}.
 callback(Ref, Msg, #state{backends=Backends}=State) ->
     %% Pass the callback on to all submodules - their responsbility to
     %% filter out if they need it.
-    [Mod:callback(Ref, Msg, ModState) || {_N, Mod, ModState} <- Backends],
+    [Mod:callback(Ref, Msg, ModState) ||
+        {_N, Mod, ModState} <- tuple_to_list(Backends)],
     {ok, State}.
 
 set_legacy_indexes(State=#state{backends=Backends}, WriteLegacy) ->
     NewBackends = [{I, Mod, maybe_set_legacy_indexes(Mod, ModState, WriteLegacy)} ||
-                      {I, Mod, ModState} <- Backends],
-    State#state{backends=NewBackends}.
+                      {I, Mod, ModState} <- tuple_to_list(Backends)],
+    State#state{backends=list_to_tuple(NewBackends),
+                num_backends=length(NewBackends)}.
 
 maybe_set_legacy_indexes(Mod, ModState, WriteLegacy) ->
     case backend_can_index_reformat(Mod, ModState) of
@@ -345,8 +342,8 @@ maybe_set_legacy_indexes(Mod, ModState, WriteLegacy) ->
     end.
 
 mark_indexes_fixed(State=#state{backends=Backends}, ForUpgrade) ->
-    NewBackends = mark_indexes_fixed(Backends, [], ForUpgrade),
-    {ok, State#state{backends=NewBackends}}.
+    NewBackends = mark_indexes_fixed(tuple_to_list(Backends), [], ForUpgrade),
+    {ok, State#state{backends=list_to_tuple(NewBackends)}}.
 
 mark_indexes_fixed([], NewBackends, _) ->
     lists:reverse(NewBackends);
@@ -371,7 +368,7 @@ fix_index(BKeys, ForUpgrade, State) ->
     Result = 
         dict:fold(
             fun(Bucket, StorageKey, Acc = {Success, Ignore, Errors}) ->
-                {_, Mod,  ModState} = Backend = get_backend(Bucket, State),
+                {_, Mod,  ModState} = Backend = get_backend(Bucket, StorageKey, State),
                 case backend_can_index_reformat(Mod, ModState) of
                     true -> 
                             {S, I, E} = backend_fix_index(Backend, Bucket, 
@@ -407,7 +404,7 @@ fixed_index_status(#state{backends=Backends}) ->
                         end
                 end,
                 undefined,
-                Backends).
+                tuple_to_list(Backends)).
 
 fixed_index_status(Mod, ModState, Status) ->
     case backend_can_index_reformat(Mod, ModState) of
@@ -424,33 +421,31 @@ fixed_index_status(Mod, ModState, Status) ->
 %% @private
 %% Given a Bucket name and the State, return the
 %% backend definition. (ie: {Name, Module, SubState})
-get_backend(Bucket, #state{backends=Backends,
-                           default_backend=DefaultBackend}) ->
-    BucketProps = riak_core_bucket:get_bucket(Bucket),
-    BackendName = proplists:get_value(backend, BucketProps, DefaultBackend),
-    %% Ensure that a backend by that name exists...
-    case lists:keyfind(BackendName, 1, Backends) of
-        false -> throw({?MODULE, undefined_backend, BackendName});
-        Backend -> Backend
-    end.
+get_backend(Bucket, Key, #state{backends=Backends} = State) ->
+    Num = get_backend_num(Bucket, Key, State),
+    element(Num, Backends).
+
+get_backend_num(Bucket, Key, #state{num_backends=NumBackends}) ->
+    <<X:64, _/binary>> = crypto:md5([Bucket, Key]),
+    (X rem NumBackends) + 1.
 
 %% @private
 %% @doc Update the state for one of the
 %% composing backends of this multi backend.
 update_backend_state(Backend,
                      Module,
+                     Bucket, Key,
                      ModState,
                      State=#state{backends=Backends}) ->
-    NewBackends = lists:keyreplace(Backend,
-                                   1,
-                                   Backends,
-                                   {Backend, Module, ModState}),
+    {Backend, Module, _} = get_backend(Bucket, Key, State),
+    Num = get_backend_num(Bucket, Key, State),
+    NewBackends = setelement(Num, Backends, {Backend, Module, ModState}),
     State#state{backends=NewBackends}.
 
 %% @private
 %% @doc Shared code used by all the backend fold functions.
 fold_all(ModFun, FoldFun, Acc, Opts, State) ->
-    Backends = State#state.backends,
+    Backends = tuple_to_list(State#state.backends),
     try
         AsyncFold = lists:member(async_fold, Opts),
         {Acc0, AsyncWorkList} =
@@ -482,7 +477,8 @@ fold_all(ModFun, FoldFun, Acc, Opts, State) ->
     end.
 
 fold_in_bucket(Bucket, ModFun, FoldFun, Acc, Opts, State) ->
-    {_Name, Module, SubState} = get_backend(Bucket, State),
+    %% SLF: This is broken.
+    {_Name, Module, SubState} = get_backend(Bucket, <<>>, State),
     Module:ModFun(FoldFun,
                   Acc,
                   Opts,
@@ -617,11 +613,11 @@ multi_backend_test_() ->
                        {ok, State} = start(42, sample_config()),
 
                        %% Check our buckets...
-                       {first_backend, riak_kv_memory_backend, _} = get_backend(<<"b1">>, State),
-                       {second_backend, riak_kv_memory_backend, _} = get_backend(<<"b2">>, State),
+                       {first_backend, riak_kv_memory_backend, _} = get_backend(<<"b1">>, <<>>, State),
+                       {second_backend, riak_kv_memory_backend, _} = get_backend(<<"b2">>, <<>>, State),
 
                        %% Check the default...
-                       {second_backend, riak_kv_memory_backend, _} = get_backend(<<"b3">>, State),
+                       {second_backend, riak_kv_memory_backend, _} = get_backend(<<"b3">>, <<>>, State),
                        ok
                end
               }
