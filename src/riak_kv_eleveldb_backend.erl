@@ -322,7 +322,7 @@ delete(Bucket, PrimaryKey, IndexSpecs, #state{ref=Ref,
 -spec fold_buckets(riak_kv_backend:fold_buckets_fun(),
                    any(),
                    [],
-                   state()) -> {ok, any()} | {async, fun()}.
+                   state()) -> {ok, fun()}.
 fold_buckets(FoldBucketsFun, Acc, Opts, #state{fold_opts=FoldOpts,
                                                ref=Ref}) ->
     FoldFun = fold_buckets_fun(FoldBucketsFun),
@@ -339,18 +339,13 @@ fold_buckets(FoldBucketsFun, Acc, Opts, #state{fold_opts=FoldOpts,
                         AccFinal
                 end
         end,
-    case lists:member(async_fold, Opts) of
-        true ->
-            {async, BucketFolder};
-        false ->
-            {ok, BucketFolder()}
-    end.
+    {ok, BucketFolder}.
 
 %% @doc Fold over all the keys for one or all buckets.
 -spec fold_keys(riak_kv_backend:fold_keys_fun(),
                 any(),
                 [{atom(), term()}],
-                state()) -> {ok, term()} | {async, fun()}.
+                state()) -> {ok, fun()}.
 fold_keys(FoldKeysFun, Acc, Opts, #state{fold_opts=FoldOpts,
                                          fixed_indexes=FixedIdx,
                                          legacy_indexes=WriteLegacyIdx,
@@ -389,12 +384,7 @@ fold_keys(FoldKeysFun, Acc, Opts, #state{fold_opts=FoldOpts,
                     AccFinal
             end
         end,
-    case lists:member(async_fold, Opts) of
-        true ->
-            {async, KeyFolder};
-        false ->
-            {ok, KeyFolder()}
-    end.
+    {ok, KeyFolder}.
 
 legacy_key_fold(Ref, FoldFun, Acc, FoldOpts0, Query={index, _, _}) ->
     {_, FirstKey} = lists:keyfind(first_key, 1, FoldOpts0),
@@ -418,7 +408,7 @@ legacy_key_fold(_Ref, _FoldFun, Acc, _FoldOpts, _Query) ->
 -spec fold_objects(riak_kv_backend:fold_objects_fun(),
                    any(),
                    [{atom(), term()}],
-                   state()) -> {ok, any()} | {async, fun()}.
+                   state()) -> {ok, fun()}.
 fold_objects(FoldObjectsFun, Acc, Opts, #state{fold_opts=FoldOpts,
                                                ref=Ref}) ->
     %% Figure out how we should limit the fold: by bucket, by
@@ -440,19 +430,9 @@ fold_objects(FoldObjectsFun, Acc, Opts, #state{fold_opts=FoldOpts,
 
     ObjectFolder =
         fun() ->
-                try
-                    eleveldb:fold(Ref, FoldFun, Acc, FoldOpts1)
-                catch
-                    {break, AccFinal} ->
-                        AccFinal
-                end
+            eleveldb:fold(Ref, FoldFun, Acc, FoldOpts1)
         end,
-    case lists:member(async_fold, Opts) of
-        true ->
-            {async, ObjectFolder};
-        false ->
-            {ok, ObjectFolder()}
-    end.
+    {ok, ObjectFolder}.
 
 %% @doc Delete all objects from this eleveldb backend
 %% and return a fresh reference.
@@ -477,17 +457,19 @@ is_empty(#state{ref=Ref, read_opts=ReadOpts, write_opts=WriteOpts}) ->
             is_empty_but_md(Ref, ReadOpts, WriteOpts)
     end.
 
+-spec is_empty_but_md(state()) -> boolean() | {error, term()}.
 is_empty_but_md(Ref, _ReadOpts, _WriteOpts) ->
     MDKey = to_md_key(?FIXED_INDEXES_KEY),
     %% fold, and if any key (except md key) is found, not
     %% empty
-    FF = fun(Key, _) when Key == MDKey -> true;
-            (_K, _) -> throw({break, false})
+    FF = fun(Key, _) when Key == MDKey -> {ok, true};
+            (_K, _) -> {stop, false}
          end,
-    try
-        eleveldb:fold_keys(Ref, FF, true, [{fill_cache, false}])
-    catch {break, Empty} ->
-            Empty
+    case eleveldb:fold_keys(Ref, FF, true, [{fill_cache, false}]) of
+        {ok, IsEmpty} ->
+            IsEmpty;
+        {error, Err, _} ->
+            {error, Err}
     end.
 
 %% @doc Get the status information for this eleveldb backend
@@ -617,11 +599,16 @@ fold_buckets_fun(FoldBucketsFun) ->
     fun(BK, {Acc, LastBucket}) ->
             case from_object_key(BK) of
                 {LastBucket, _} ->
-                    {Acc, LastBucket};
+                    {ok, {Acc, LastBucket}};
                 {Bucket, _} ->
-                    {FoldBucketsFun(Bucket, Acc), Bucket};
+                    case FoldBucketsFun(Bucket, Acc) of
+                        {ok, Acc} ->
+                            {ok, {Acc, Bucket}};
+                        BadRes ->
+                            BadRes
+                    end;
                 _ ->
-                    throw({break, Acc})
+                    {stop, Acc}
             end
     end.
 
@@ -634,7 +621,7 @@ fold_keys_fun(FoldKeysFun, undefined) ->
                 {Bucket, Key} ->
                     FoldKeysFun(Bucket, Key, Acc);
                 _ ->
-                    throw({break, Acc})
+                    {stop, Acc}
             end
     end;
 fold_keys_fun(FoldKeysFun, {bucket, FilterBucket}) ->
@@ -644,7 +631,7 @@ fold_keys_fun(FoldKeysFun, {bucket, FilterBucket}) ->
                 {Bucket, Key} when Bucket == FilterBucket ->
                     FoldKeysFun(Bucket, Key, Acc);
                 _ ->
-                    throw({break, Acc})
+                    {stop, Acc}
             end
     end;
 %% 2i queries
@@ -656,11 +643,11 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket, Q=?KV_INDEX_Q{filter_field=Filt
             ObjectKey = from_object_key(StorageKey),
             case riak_index:object_key_in_range(ObjectKey, FilterBucket, Q) of
                 {true, {Bucket, Key}} ->
-                    stoppable_fold(FoldKeysFun, Bucket, Key, Acc);
+                    FoldKeysFun(Bucket, Key, Acc);
                 {skip, _BK} ->
-                    Acc;
+                    {ok, Acc};
                 _ ->
-                    throw({break, Acc})
+                    {stop, Acc}
             end
     end;
 fold_keys_fun(FoldKeysFun, {index, FilterBucket, Q=?KV_INDEX_Q{return_terms=Terms}}) ->
@@ -675,9 +662,9 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket, Q=?KV_INDEX_Q{return_terms=Term
                           end,
                     stoppable_fold(FoldKeysFun, Bucket, Val, Acc);
                 {skip, _IK} ->
-                    Acc;
+                    {ok, Acc};
                 _ ->
-                    throw({break, Acc})
+                    {stop, Acc}
             end
     end;
 fold_keys_fun(FoldKeysFun, {index, incorrect_format, ForUpgrade}) when is_boolean(ForUpgrade) ->
@@ -705,9 +692,9 @@ fold_keys_fun(FoldKeysFun, {index, incorrect_format, ForUpgrade}) when is_boolea
                 {fold, B, K} ->
                     FoldKeysFun(B, K, Acc);
                 ignore ->
-                    Acc;
+                    {ok, Acc};
                 stop ->
-                    throw({break, Acc})
+                    {stop, Acc}
             end
     end;
 fold_keys_fun(FoldKeysFun, {index, Bucket, V1Q}) ->

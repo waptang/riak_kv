@@ -255,21 +255,15 @@ delete(Bucket, Key, IndexSpecs, State=#state{data_ref=DataRef,
 -spec fold_buckets(riak_kv_backend:fold_buckets_fun(),
                    any(),
                    [],
-                   state()) -> {ok, any()}.
+                   state()) -> {ok, fun()}.
 fold_buckets(FoldBucketsFun, Acc, Opts, #state{data_ref=DataRef}) ->
     FoldFun = fold_buckets_fun(FoldBucketsFun),
-    case lists:member(async_fold, Opts) of
-        true ->
-            BucketFolder =
-                fun() ->
-                        {Acc0, _} = ets:foldl(FoldFun, {Acc, sets:new()}, DataRef),
-                        Acc0
-                end,
-            {async, BucketFolder};
-        false ->
+    BucketFolder =
+       fun() ->
             {Acc0, _} = ets:foldl(FoldFun, {Acc, sets:new()}, DataRef),
-            {ok, Acc0}
-    end.
+            Acc0
+        end,
+    {ok, BucketFolder}.
 
 %% @doc Fold over all the keys for one or all buckets.
 -spec fold_keys(riak_kv_backend:fold_keys_fun(),
@@ -293,7 +287,7 @@ fold_objects(FoldObjectsFun, Acc, Opts, State) ->
            riak_kv_backend:fold_keys_fun(), any(),
            [{atom(), term()}],
            state()) ->
-                   {ok, any()} | {async, function()}.
+                   {ok, function()}.
 fold(FoldTypeFun, FoldFun0, Acc, Opts, #state{data_ref=DataRef, index_ref=IndexRef}) ->
     %% Figure out how we should limit the fold: by bucket, by
     %% secondary index, or neither (fold across everything.)
@@ -313,13 +307,8 @@ fold(FoldTypeFun, FoldFun0, Acc, Opts, #state{data_ref=DataRef, index_ref=IndexR
                      FoldFun = FoldTypeFun(FoldFun0, undefined),
                      get_folder(FoldFun, Acc, DataRef)
              end,
+    {ok, Folder}.
 
-    case lists:member(async_fold, Opts) of
-        true ->
-            {async, Folder};
-        false ->
-            {ok, Folder()}
-    end.
 %% @doc Delete all objects from this memory backend
 -spec drop(state()) -> {ok, state()}.
 drop(State=#state{data_ref=DataRef,
