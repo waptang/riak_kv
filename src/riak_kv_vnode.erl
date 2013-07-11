@@ -93,23 +93,10 @@
                 reqid :: term(),
                 target :: pid()}).
 
--record(state, {idx :: partition(),
-                mod :: module(),
-                modstate :: term(),
-                mrjobs :: term(),
-                vnodeid :: undefined | binary(),
-                delete_mode :: keep | immediate | pos_integer(),
-                bucket_buf_size :: pos_integer(),
-                index_buf_size :: pos_integer(),
-                key_buf_size :: pos_integer(),
-                async_folding :: boolean(),
-                in_handoff = false :: boolean(),
-                hashtrees :: pid() }).
-
 -type index_op() :: add | remove.
 -type index_value() :: integer() | binary().
 -type index() :: non_neg_integer().
--type state() :: #state{}.
+-type state() :: #riak_kv_vnode_state{}.
 
 -define(DEFAULT_HASHTREE_TOKENS, 90).
 
@@ -134,7 +121,7 @@ maybe_create_hashtrees(State) ->
 -spec maybe_create_hashtrees(boolean(), state()) -> state().
 maybe_create_hashtrees(false, State) ->
     State;
-maybe_create_hashtrees(true, State=#state{idx=Index}) ->
+maybe_create_hashtrees(true, State=#riak_kv_vnode_state{idx=Index}) ->
     %% Only maintain a hashtree if a primary vnode
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     case riak_core_ring:vnode_type(Ring, Index) of
@@ -143,12 +130,12 @@ maybe_create_hashtrees(true, State=#state{idx=Index}) ->
             case riak_kv_index_hashtree:start(Index, RP, self()) of
                 {ok, Trees} ->
                     monitor(process, Trees),
-                    State#state{hashtrees=Trees};
+                    State#riak_kv_vnode_state{hashtrees=Trees};
                 Error ->
                     lager:info("riak_kv/~p: unable to start index_hashtree: ~p",
                                [Index, Error]),
                     erlang:send_after(1000, self(), retry_create_hashtree),
-                    State#state{hashtrees=undefined}
+                    State#riak_kv_vnode_state{hashtrees=undefined}
             end;
         _ ->
             State
@@ -358,7 +345,7 @@ init([Index]) ->
     case catch Mod:start(Index, Configuration) of
         {ok, ModState} ->
             %% Get the backend capabilities
-            State = #state{idx=Index,
+            State = #riak_kv_vnode_state{idx=Index,
                            async_folding=AsyncFolding,
                            mod=Mod,
                            modstate=ModState,
@@ -403,7 +390,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
                            req_id=ReqId,
                            start_time=StartTime,
                            options=Options},
-               Sender, State=#state{idx=Idx}) ->
+               Sender, State=#riak_kv_vnode_state{idx=Idx}) ->
     StartTS = os:timestamp(),
     riak_core_vnode:reply(Sender, {w, Idx, ReqId}),
     UpdState = do_put(Sender, BKey,  Object, ReqId, StartTime, Options, State),
@@ -413,7 +400,7 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
 handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},Sender,State) ->
     do_get(Sender, BKey, ReqId, State);
 handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Caller}, _Sender,
-               State=#state{async_folding=AsyncFolding,
+               State=#riak_kv_vnode_state{async_folding=AsyncFolding,
                             key_buf_size=BufferSize,
                             mod=Mod,
                             modstate=ModState,
@@ -485,7 +472,7 @@ handle_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0}, Sender, State) ->
     do_fold(FoldWrapper, Acc0, Sender, State);
 
 %% entropy exchange commands
-handle_command({hashtree_pid, Node}, _, State=#state{hashtrees=HT}) ->
+handle_command({hashtree_pid, Node}, _, State=#riak_kv_vnode_state{hashtrees=HT}) ->
     %% Handle riak_core request forwarding during ownership handoff.
     case node() of
         Node ->
@@ -494,53 +481,53 @@ handle_command({hashtree_pid, Node}, _, State=#state{hashtrees=HT}) ->
             case HT of
                 undefined ->
                     State2 = maybe_create_hashtrees(State),
-                    {reply, {ok, State2#state.hashtrees}, State2};
+                    {reply, {ok, State2#riak_kv_vnode_state.hashtrees}, State2};
                 _ ->
                     {reply, {ok, HT}, State}
             end;
         _ ->
             {reply, {error, wrong_node}, State}
     end;
-handle_command({rehash, Bucket, Key}, _, State=#state{mod=Mod, modstate=ModState}) ->
+handle_command({rehash, Bucket, Key}, _, State=#riak_kv_vnode_state{mod=Mod, modstate=ModState}) ->
     case do_get_binary(Bucket, Key, Mod, ModState) of
         {ok, Bin, _UpdModState} ->
             update_hashtree(Bucket, Key, Bin, State);
         _ ->
             %% Make sure hashtree isn't tracking deleted data
-            riak_kv_index_hashtree:delete({Bucket, Key}, State#state.hashtrees)
+            riak_kv_index_hashtree:delete({Bucket, Key}, State#riak_kv_vnode_state.hashtrees)
     end,
     {noreply, State};
 
 %% Commands originating from inside this vnode
 handle_command({backend_callback, Ref, Msg}, _Sender,
-               State=#state{mod=Mod, modstate=ModState}) ->
+               State=#riak_kv_vnode_state{mod=Mod, modstate=ModState}) ->
     Mod:callback(Ref, Msg, ModState),
     {noreply, State};
-handle_command({mapexec_error_noretry, JobId, Err}, _Sender, #state{mrjobs=Jobs}=State) ->
+handle_command({mapexec_error_noretry, JobId, Err}, _Sender, #riak_kv_vnode_state{mrjobs=Jobs}=State) ->
     NewState = case dict:find(JobId, Jobs) of
                    {ok, Job} ->
                        Jobs1 = dict:erase(JobId, Jobs),
                        #mrjob{target=Target} = Job,
                        gen_fsm:send_event(Target, {mapexec_error_noretry, self(), Err}),
-                       State#state{mrjobs=Jobs1};
+                       State#riak_kv_vnode_state{mrjobs=Jobs1};
                    error ->
                        State
                end,
     {noreply, NewState};
-handle_command({mapexec_reply, JobId, Result}, _Sender, #state{mrjobs=Jobs}=State) ->
+handle_command({mapexec_reply, JobId, Result}, _Sender, #riak_kv_vnode_state{mrjobs=Jobs}=State) ->
     NewState = case dict:find(JobId, Jobs) of
                    {ok, Job} ->
                        Jobs1 = dict:erase(JobId, Jobs),
                        #mrjob{target=Target} = Job,
                        gen_fsm:send_event(Target, {mapexec_reply, Result, self()}),
-                       State#state{mrjobs=Jobs1};
+                       State#riak_kv_vnode_state{mrjobs=Jobs1};
                    error ->
                        State
                end,
     {noreply, NewState};
 handle_command(?KV_VNODE_STATUS_REQ{},
                _Sender,
-               State=#state{idx=Index,
+               State=#riak_kv_vnode_state{idx=Index,
                             mod=Mod,
                             modstate=ModState}) ->
     BackendStatus = {backend_status, Mod, Mod:status(ModState)},
@@ -550,16 +537,16 @@ handle_command({reformat_object, BKey}, _Sender, State) ->
     {Reply, UpdState} = do_reformat(BKey, State),
     {reply, Reply, UpdState};
 handle_command({fix_incorrect_index_entry, {done, ForUpgrade}}, _Sender,
-               State=#state{mod=Mod, modstate=ModState}) ->
+               State=#riak_kv_vnode_state{mod=Mod, modstate=ModState}) ->
     case Mod:mark_indexes_fixed(ModState, ForUpgrade) of %% only defined for eleveldb backend
         {ok, NewModState} ->
-            {reply, ok, State#state{modstate=NewModState}};
+            {reply, ok, State#riak_kv_vnode_state{modstate=NewModState}};
         {error, _Reason} ->
             {reply, error, State}
     end;
 handle_command({fix_incorrect_index_entry, Keys, ForUpgrade},
                _Sender,
-               State=#state{mod=Mod,
+               State=#riak_kv_vnode_state{mod=Mod,
                             modstate=ModState}) ->
     Reply =
         case Mod:fix_index(Keys, ForUpgrade, ModState) of
@@ -575,7 +562,7 @@ handle_command({fix_incorrect_index_entry, Keys, ForUpgrade},
     {reply, Reply, State};
 handle_command({get_index_entries, Opts},
                Sender,
-               State=#state{mod=Mod,
+               State=#riak_kv_vnode_state{mod=Mod,
                             modstate=ModState0}) ->
     ForUpgrade = not proplists:get_value(downgrade, Opts, false),
     BufferSize = proplists:get_value(batch_size, Opts, 1),
@@ -629,7 +616,7 @@ handle_command({get_index_entries, Opts},
 handle_coverage(?KV_LISTBUCKETS_REQ{item_filter=ItemFilter},
                 _FilterVNodes,
                 Sender,
-                State=#state{async_folding=AsyncFolding,
+                State=#riak_kv_vnode_state{async_folding=AsyncFolding,
                              bucket_buf_size=BufferSize,
                              mod=Mod,
                              modstate=ModState}) ->
@@ -686,7 +673,7 @@ handle_coverage(?KV_INDEX_REQ{bucket=Bucket,
 
 handle_coverage_index(Bucket, ItemFilter, Query,
                       FilterVNodes, Sender,
-                      State=#state{mod=Mod,
+                      State=#riak_kv_vnode_state{mod=Mod,
                                    modstate=ModState},
                       ResultFunFun) ->
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
@@ -724,7 +711,7 @@ handle_coverage_keyfold(Bucket, ItemFilter, Query,
 %% to support index operations that can return objects
 handle_coverage_fold(FoldType, Bucket, ItemFilter, ResultFun,
                         FilterVNodes, Sender, Opts0,
-                        State=#state{async_folding=AsyncFolding,
+                        State=#riak_kv_vnode_state{async_folding=AsyncFolding,
                                      idx=Index,
                                      key_buf_size=BufferSize,
                                      mod=Mod,
@@ -777,10 +764,10 @@ request_hash(_Req) ->
     undefined.
 
 handoff_starting(_TargetNode, State) ->
-    {true, State#state{in_handoff=true}}.
+    {true, State#riak_kv_vnode_state{in_handoff=true}}.
 
 handoff_cancelled(State) ->
-    {ok, State#state{in_handoff=false}}.
+    {ok, State#riak_kv_vnode_state{in_handoff=false}}.
 
 handoff_finished(_TargetNode, State) ->
     {ok, State}.
@@ -790,9 +777,9 @@ handle_handoff_data(BinObj, State) ->
     {B, K} = BKey,
     case do_diffobj_put(BKey, riak_object:from_binary(B, K, Val), State) of
         {ok, UpdModState} ->
-            {reply, ok, State#state{modstate=UpdModState}};
+            {reply, ok, State#riak_kv_vnode_state{modstate=UpdModState}};
         {error, Reason, UpdModState} ->
-            {reply, {error, Reason}, State#state{modstate=UpdModState}};
+            {reply, {error, Reason}, State#riak_kv_vnode_state{modstate=UpdModState}};
         Err ->
             {reply, {error, Err}, State}
     end.
@@ -805,7 +792,7 @@ encode_handoff_item({B, K}, V) ->
     Value  = riak_object:to_binary_version(ObjFmt, B, K, V),
     encode_binary_object(B, K, Value).
 
-is_empty(State=#state{mod=Mod, modstate=ModState}) ->
+is_empty(State=#riak_kv_vnode_state{mod=Mod, modstate=ModState}) ->
     IsEmpty = Mod:is_empty(ModState),
     case IsEmpty of
         true ->
@@ -815,14 +802,14 @@ is_empty(State=#state{mod=Mod, modstate=ModState}) ->
             {false, Size, State}
     end.
 
-maybe_calc_handoff_size(#state{mod=Mod,modstate=ModState}) ->
+maybe_calc_handoff_size(#riak_kv_vnode_state{mod=Mod,modstate=ModState}) ->
     {ok, Capabilities} = Mod:capabilities(ModState),
     case lists:member(size, Capabilities) of
         true -> Mod:data_size(ModState);
         false -> undefined
     end.
 
-delete(State=#state{idx=Index,mod=Mod, modstate=ModState}) ->
+delete(State=#riak_kv_vnode_state{idx=Index,mod=Mod, modstate=ModState}) ->
     %% clear vnodeid first, if drop removes data but fails
     %% want to err on the side of creating a new vnodeid
     {ok, cleared} = clear_vnodeid(Index),
@@ -833,37 +820,37 @@ delete(State=#state{idx=Index,mod=Mod, modstate=ModState}) ->
             lager:error("Failed to drop ~p. Reason: ~p~n", [Mod, Reason]),
             ok
     end,
-    case State#state.hashtrees of
+    case State#riak_kv_vnode_state.hashtrees of
         undefined ->
             ok;
         HT ->
             riak_kv_index_hashtree:destroy(HT)
     end,
-    {ok, State#state{modstate=UpdModState,vnodeid=undefined,hashtrees=undefined}}.
+    {ok, State#riak_kv_vnode_state{modstate=UpdModState,vnodeid=undefined,hashtrees=undefined}}.
 
-terminate(_Reason, #state{mod=Mod, modstate=ModState}) ->
+terminate(_Reason, #riak_kv_vnode_state{mod=Mod, modstate=ModState}) ->
     Mod:stop(ModState),
     ok.
 
-handle_info(retry_create_hashtree, State=#state{hashtrees=undefined}) ->
+handle_info(retry_create_hashtree, State=#riak_kv_vnode_state{hashtrees=undefined}) ->
     State2 = maybe_create_hashtrees(State),
-    case State2#state.hashtrees of
+    case State2#riak_kv_vnode_state.hashtrees of
         undefined ->
             ok;
         _ ->
             lager:info("riak_kv/~p: successfully started index_hashtree on retry",
-                       [State#state.idx])
+                       [State#riak_kv_vnode_state.idx])
     end,
     {ok, State2};
 handle_info(retry_create_hashtree, State) ->
     {ok, State};
-handle_info({'DOWN', _, _, Pid, _}, State=#state{hashtrees=Pid}) ->
-    State2 = State#state{hashtrees=undefined},
+handle_info({'DOWN', _, _, Pid, _}, State=#riak_kv_vnode_state{hashtrees=Pid}) ->
+    State2 = State#riak_kv_vnode_state{hashtrees=undefined},
     State3 = maybe_create_hashtrees(State2),
     {ok, State3};
 handle_info({'DOWN', _, _, _, _}, State) ->
     {ok, State};
-handle_info({final_delete, BKey, RObjHash}, State = #state{mod=Mod, modstate=ModState}) ->
+handle_info({final_delete, BKey, RObjHash}, State = #riak_kv_vnode_state{mod=Mod, modstate=ModState}) ->
     UpdState = case do_get_term(BKey, Mod, ModState) of
                    {ok, RObj} ->
                        case delete_hash(RObj) of
@@ -922,7 +909,7 @@ do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
     update_index_write_stats(UpdPutArgs#putargs.is_index, UpdPutArgs#putargs.index_specs),
     UpdState.
 
-do_backend_delete(BKey, RObj, State = #state{mod = Mod, modstate = ModState}) ->
+do_backend_delete(BKey, RObj, State = #riak_kv_vnode_state{mod = Mod, modstate = ModState}) ->
     %% object is a tombstone or all siblings are tombstones
     %% Calculate the index specs to remove...
     %% JDM: This should just be a tombstone by this point, but better
@@ -933,19 +920,19 @@ do_backend_delete(BKey, RObj, State = #state{mod = Mod, modstate = ModState}) ->
     {Bucket, Key} = BKey,
     case Mod:delete(Bucket, Key, IndexSpecs, ModState) of
         {ok, UpdModState} ->
-            riak_kv_index_hashtree:delete(BKey, State#state.hashtrees),
+            riak_kv_index_hashtree:delete(BKey, State#riak_kv_vnode_state.hashtrees),
             ?INDEX(RObj, delete, State),
             update_index_delete_stats(IndexSpecs),
-            State#state{modstate = UpdModState};
+            State#riak_kv_vnode_state{modstate = UpdModState};
         {error, _Reason, UpdModState} ->
-            State#state{modstate = UpdModState}
+            State#riak_kv_vnode_state{modstate = UpdModState}
     end.
 
 %% Compute a hash of the deleted object
 delete_hash(RObj) ->
     erlang:phash2(RObj, 4294967296).
 
-prepare_put(State=#state{vnodeid=VId,
+prepare_put(State=#riak_kv_vnode_state{vnodeid=VId,
                          mod=Mod,
                          modstate=ModState},
             PutArgs=#putargs{bkey={Bucket, _Key},
@@ -972,7 +959,7 @@ prepare_put(State=#state{vnodeid=VId,
         false ->
             prepare_put(State, PutArgs, IndexBackend)
     end.
-prepare_put(#state{idx=Idx,
+prepare_put(#riak_kv_vnode_state{idx=Idx,
                    vnodeid=VId,
                    mod=Mod,
                    modstate=ModState},
@@ -1061,17 +1048,17 @@ handle_counter(_Coord, _CounterOp, _VId, RObj) ->
     RObj.
 
 perform_put({false, Obj},
-            #state{idx=Idx}=State,
+            #riak_kv_vnode_state{idx=Idx}=State,
             #putargs{returnbody=true,
                      reqid=ReqID}) ->
     {{dw, Idx, Obj, ReqID}, State};
 perform_put({false, _Obj},
-            #state{idx=Idx}=State,
+            #riak_kv_vnode_state{idx=Idx}=State,
             #putargs{returnbody=false,
                      reqid=ReqId}) ->
     {{dw, Idx, ReqId}, State};
 perform_put({true, Obj},
-            #state{idx=Idx,
+            #riak_kv_vnode_state{idx=Idx,
                    mod=Mod,
                    modstate=ModState}=State,
             #putargs{returnbody=RB,
@@ -1091,9 +1078,9 @@ perform_put({true, Obj},
         {{error, _Reason, UpdModState}, _EncodedVal} ->
             Reply = {fail, Idx, ReqID}
     end,
-    {Reply, State#state{modstate=UpdModState}}.
+    {Reply, State#riak_kv_vnode_state{modstate=UpdModState}}.
 
-do_reformat({Bucket, Key}=BKey, State=#state{mod=Mod, modstate=ModState}) ->
+do_reformat({Bucket, Key}=BKey, State=#riak_kv_vnode_state{mod=Mod, modstate=ModState}) ->
     case do_get_object(Bucket, Key, Mod, ModState) of
         {error, not_found, _UpdModState} ->
             Reply = {error, not_found},
@@ -1173,7 +1160,7 @@ put_merge(true, false, CurObj, UpdObj, VId, StartTime) ->
 
 %% @private
 do_get(_Sender, BKey, ReqID,
-       State=#state{idx=Idx,mod=Mod,modstate=ModState}) ->
+       State=#riak_kv_vnode_state{idx=Idx,mod=Mod,modstate=ModState}) ->
     StartTS = os:timestamp(),
     Retval = do_get_term(BKey, Mod, ModState),
     update_vnode_stats(vnode_get, Idx, StartTS),
@@ -1315,10 +1302,10 @@ finish_fold(BufferMod, Buffer, Sender) ->
 
 %% @private
 do_delete(BKey, ReqId, State) ->
-    Mod = State#state.mod,
-    ModState = State#state.modstate,
-    Idx = State#state.idx,
-    DeleteMode = State#state.delete_mode,
+    Mod = State#riak_kv_vnode_state.mod,
+    ModState = State#riak_kv_vnode_state.modstate,
+    Idx = State#riak_kv_vnode_state.idx,
+    DeleteMode = State#riak_kv_vnode_state.delete_mode,
 
     %% Get the existing object.
     case do_get_term(BKey, Mod, ModState) of
@@ -1351,7 +1338,7 @@ do_delete(BKey, ReqId, State) ->
     end.
 
 %% @private
-do_fold(Fun, Acc0, Sender, State=#state{async_folding=AsyncFolding,
+do_fold(Fun, Acc0, Sender, State=#riak_kv_vnode_state{async_folding=AsyncFolding,
                                         mod=Mod,
                                         modstate=ModState}) ->
     {ok, Capabilities} = Mod:capabilities(ModState),
@@ -1376,7 +1363,7 @@ do_fold(Fun, Acc0, Sender, State=#state{async_folding=AsyncFolding,
     end.
 
 %% @private
-do_get_vclocks(KeyList,_State=#state{mod=Mod,modstate=ModState}) ->
+do_get_vclocks(KeyList,_State=#riak_kv_vnode_state{mod=Mod,modstate=ModState}) ->
     [{BKey, do_get_vclock(BKey,Mod,ModState)} || BKey <- KeyList].
 %% @private
 do_get_vclock({Bucket, Key}, Mod, ModState) ->
@@ -1388,7 +1375,7 @@ do_get_vclock({Bucket, Key}, Mod, ModState) ->
 %% @private
 %% upon receipt of a handoff datum, there is no client FSM
 do_diffobj_put({Bucket, Key}, DiffObj,
-               StateData=#state{mod=Mod,
+               StateData=#riak_kv_vnode_state{mod=Mod,
                                 modstate=ModState,
                                 idx=Idx}) ->
     StartTS = os:timestamp(),
@@ -1443,7 +1430,7 @@ do_diffobj_put({Bucket, Key}, DiffObj,
     end.
 
 -spec update_hashtree(binary(), binary(), binary(), state()) -> ok.
-update_hashtree(Bucket, Key, Val, #state{hashtrees=Trees}) ->
+update_hashtree(Bucket, Key, Val, #riak_kv_vnode_state{hashtrees=Trees}) ->
     case get_hashtree_token() of
         true ->
             riak_kv_index_hashtree:async_insert_object({Bucket, Key}, Val, Trees),

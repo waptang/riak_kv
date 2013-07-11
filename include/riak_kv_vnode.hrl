@@ -55,6 +55,19 @@
           bkeys = [] :: [{binary(), binary()}]
          }).
 
+-record(riak_kv_vnode_state, {idx :: partition(),
+                mod :: module(),
+                modstate :: term(),
+                mrjobs :: term(),
+                vnodeid :: undefined | binary(),
+                delete_mode :: keep | immediate | pos_integer(),
+                bucket_buf_size :: pos_integer(),
+                index_buf_size :: pos_integer(),
+                key_buf_size :: pos_integer(),
+                async_folding :: boolean(),
+                in_handoff = false :: boolean(),
+                hashtrees :: pid() }).
+
 -define(KV_PUT_REQ, #riak_kv_put_req_v1).
 -define(KV_GET_REQ, #riak_kv_get_req_v1).
 -define(KV_LISTBUCKETS_REQ, #riak_kv_listbuckets_req_v1).
