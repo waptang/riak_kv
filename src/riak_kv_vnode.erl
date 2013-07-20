@@ -197,7 +197,7 @@ local_put(Index, Obj) ->
 local_put(Index, Obj, Options) ->
     BKey = {riak_object:bucket(Obj), riak_object:key(Obj)},
     Ref = make_ref(),
-    ReqId = erlang:phash2(erlang:now()),
+    ReqId = erlang:phash2(os:timestamp()),
     StartTime = riak_core_util:moment(),
     Sender = {raw, Ref, self()},
     put({Index, node()}, BKey, Obj, ReqId, StartTime, Options, Sender),
@@ -208,7 +208,7 @@ local_put(Index, Obj, Options) ->
 
 local_get(Index, BKey) ->
     Ref = make_ref(),
-    ReqId = erlang:phash2(erlang:now()),
+    ReqId = erlang:phash2(os:timestamp()),
     Sender = {raw, Ref, self()},
     get({Index,node()}, BKey, ReqId, Sender),
     receive
@@ -1125,8 +1125,8 @@ select_newest_content(Mult) ->
     hd(lists:sort(
          fun({MD0, _}, {MD1, _}) ->
                  riak_core_util:compare_dates(
-                   dict:fetch(<<"X-Riak-Last-Modified">>, MD0),
-                   dict:fetch(<<"X-Riak-Last-Modified">>, MD1))
+                   orddict:fetch(<<"X-Riak-Last-Modified">>, MD0),
+                   orddict:fetch(<<"X-Riak-Last-Modified">>, MD1))
          end,
          Mult)).
 
@@ -1163,9 +1163,9 @@ put_merge(true, false, CurObj, UpdObj, VId, StartTime) ->
 %% @private
 do_get(_Sender, BKey, ReqID,
        State=#state{idx=Idx,mod=Mod,modstate=ModState}) ->
-    StartTS = os:timestamp(),
+    %%StartTS = os:timestamp(),
     Retval = do_get_term(BKey, Mod, ModState),
-    update_vnode_stats(vnode_get, Idx, StartTS),
+    %%update_vnode_stats(vnode_get, Idx, StartTS),
     {reply, {r, Retval, Idx, ReqID}, State}.
 
 %% @private
@@ -1193,21 +1193,17 @@ do_get_binary(Bucket, Key, Mod, ModState) ->
     end.
 
 do_get_object(Bucket, Key, Mod, ModState) ->
-    case uses_r_object(Mod, ModState, Bucket) of
-        true ->
-            Mod:get_object(Bucket, Key, false, ModState);
-        false ->
-            case do_get_binary(Bucket, Key, Mod, ModState) of
-                {ok, ObjBin, _UpdModState} ->
-                    case riak_object:from_binary(Bucket, Key, ObjBin) of
-                        {error, R} ->
-                            throw(R);
-                        RObj ->
-                            {ok, RObj, _UpdModState}
-                    end;
-                Else ->
-                    Else
-            end
+    case do_get_binary(Bucket, Key, Mod, ModState) of
+        {ok, ObjBin, _UpdModState} ->
+%%            {ok, ObjBin, _UpdModState};
+            case riak_object:from_binary(Bucket, Key, ObjBin) of
+                {error, R} ->
+                    throw(R);
+                RObj ->
+                    {ok, RObj, _UpdModState}
+            end;
+        Else ->
+            Else
     end.
 
 %% @private
@@ -1663,9 +1659,10 @@ encode_and_put(Obj, Mod, Bucket, Key, IndexSpecs, ModState) ->
             {Mod:put(Bucket, Key, IndexSpecs, EncodedVal, ModState), EncodedVal}
     end.
 
-uses_r_object(Mod, ModState, Bucket) ->
-    {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
-    lists:member(uses_r_object, Capabilities).
+uses_r_object(_Mod, _ModState, _Bucket) ->
+    false.
+%%    {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
+%%    lists:member(uses_r_object, Capabilities).
 
 -ifdef(TEST).
 

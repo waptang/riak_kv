@@ -679,7 +679,7 @@ apply_updates(State = #state{robj = RObj}) ->
 %%
 %% @private
 update_last_modified(RObj) ->
-    MD0 = case dict:find(clean, riak_object:get_update_metadata(RObj)) of
+    MD0 = case orddict:find(clean, riak_object:get_update_metadata(RObj)) of
               {ok, true} ->
                   %% There have been no changes to updatemetadata. If we stash the
                   %% last modified in this dict, it will cause us to lose existing
@@ -705,8 +705,8 @@ update_last_modified(RObj) ->
     %% objects with the same vclock on 0.14.2 if the same clientid was used in
     %% the same second.  It can be revisited post-1.0.0.
     Now = os:timestamp(),
-    NewMD = dict:store(?MD_VTAG, riak_kv_util:make_vtag(Now),
-                       dict:store(?MD_LASTMOD, Now, MD0)),
+    NewMD = orddict:store(?MD_VTAG, riak_kv_util:make_vtag(Now),
+                          orddict:store(?MD_LASTMOD, Now, MD0)),
     riak_object:update_metadata(RObj, NewMD).
 
 %% Invokes the hook and returns a tuple of

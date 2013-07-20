@@ -94,7 +94,7 @@ parse_object_hook(RObj) ->
             case parse_object(RObj) of
                 {ok, ParsedFields} ->
                     MD1 = riak_object:get_metadata(RObj),
-                    MD2 = dict:store(?MD_INDEX, ParsedFields, MD1),
+                    MD2 = orddict:store(?MD_INDEX, ParsedFields, MD1),
                     riak_object:update_metadata(RObj, MD2);
                 {error, Reasons} ->
                     {fail, Reasons}
@@ -122,7 +122,7 @@ parse_object(RObj) ->
     %% be called on a write with siblings, so we need to examine *all*
     %% metadatas.
     F = fun(X, Acc) ->
-                case dict:find(?MD_INDEX, X) of
+                case orddict:find(?MD_INDEX, X) of
                     {ok, IFs} ->
                         IFs ++ Acc;
                     error ->
@@ -570,7 +570,7 @@ parse_object_hook_test() ->
     %% Helper function to create an object using a proplist of
     %% supplied data, and call parse_object_hook on it.
     F = fun(MetaDataList) ->
-                Obj = riak_object:new(<<"B">>, <<"K">>, <<"VAL">>, dict:from_list([{?MD_INDEX, MetaDataList}])),
+                Obj = riak_object:new(<<"B">>, <<"K">>, <<"VAL">>, orddict:from_list([{?MD_INDEX, MetaDataList}])),
                 parse_object_hook(Obj)
         end,
 
@@ -615,7 +615,7 @@ parse_object_test() ->
     %% Helper function to create an object using a proplist of
     %% supplied data, and call validate_object on it.
     F = fun(MetaDataList) ->
-                Obj = riak_object:new(<<"B">>, <<"K">>, <<"VAL">>, dict:from_list([{?MD_INDEX, MetaDataList}])),
+                Obj = riak_object:new(<<"B">>, <<"K">>, <<"VAL">>, orddict:from_list([{?MD_INDEX, MetaDataList}])),
                 parse_object(Obj)
         end,
 
