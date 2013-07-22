@@ -33,6 +33,7 @@
          expand_rw_value/4,
          normalize_rw_value/2,
          make_request/2,
+         get_backend_config/3, 
          mapred_system/0]).
 
 -include_lib("riak_kv_vnode.hrl").
@@ -167,6 +168,21 @@ mapred_system() ->
             legacy
     end.
 
+
+%% @doc Get backend config for backends without an associated application
+%% eg, yessir, memory
+get_backend_config(Key, Config, Category) ->
+    case proplists:get_value(Key, Config) of
+        undefined ->
+            case proplists:get_value(Category, Config) of
+                undefined ->
+                    undefined;
+                InnerConfig ->
+                    proplists:get_value(Key, InnerConfig)
+            end;
+        Val ->
+            Val
+    end.
 
 %% ===================================================================
 %% EUnit tests
