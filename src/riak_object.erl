@@ -46,7 +46,7 @@
           key :: key(),
           contents :: [#r_content{}],
           vclock = vclock:fresh() :: vclock:vclock(),
-          updatemetadata=orddict:store(clean, true, orddict:new()) :: dict(),
+          updatemetadata=[{clean, true}] :: dict(),
           updatevalue :: term()
          }).
 -opaque riak_object() :: #r_object{}.
@@ -99,7 +99,7 @@ new(B, K, V, MD) when is_binary(B), is_binary(K) ->
         false ->
             case MD of
                 no_initial_metadata ->
-                    Contents = [#r_content{metadata=orddict:new(), value=V}],
+                    Contents = [#r_content{metadata=[], value=V}],
                     #r_object{bucket=B,key=K,
                               contents=Contents,vclock=vclock:fresh()};
                 _ ->
@@ -175,7 +175,7 @@ reconcile(Objects, AllowMultiple) ->
     VClock = vclock:merge([O#r_object.vclock || O <- RObjs]),
     HdObj = hd(RObjs),
     HdObj#r_object{contents=Contents,vclock=VClock,
-                   updatemetadata=orddict:store(clean, true, orddict:new()),
+                   updatemetadata=[{clean, true}],
                    updatevalue=undefined}.
 
 -spec reconcile([riak_object()]) -> [riak_object()].
@@ -230,7 +230,7 @@ merge(OldObject, NewObject) ->
                                              lists:usort(OldObject#r_object.contents)),
                        vclock=vclock:merge([OldObject#r_object.vclock,
                                             NewObj1#r_object.vclock]),
-                       updatemetadata=orddict:store(clean, true, orddict:new()),
+                       updatemetadata=[{clean, true}],
                        updatevalue=undefined}.
 
 %% @doc  Promote pending updates (made with the update_value() and
@@ -255,7 +255,7 @@ apply_updates(Object=#r_object{}) ->
          end,
     Contents = [#r_content{metadata=M,value=V} || {M,V} <- lists:zip(MD, VL)],
     Object#r_object{contents=Contents,
-                    updatemetadata=orddict:store(clean, true, orddict:new()),
+                    updatemetadata=[{clean, true}],
                     updatevalue=undefined}.
 
 %% @doc Return the containing bucket for this riak_object.
@@ -500,7 +500,7 @@ jsonify_proplist(List) ->
                                          _ ->
                                              orddict:store(JSONKey, JSONVal, Dict)
                                      end
-                             end, orddict:new(), List)).
+                             end, [], List)).
 
 dejsonify_values([], Accum) ->
     lists:reverse(Accum);
@@ -619,57 +619,56 @@ binary_version(<<?MAGIC:8/integer, 1:8/integer, _/binary>>) -> v1.
 -spec from_binary(bucket(),key(),binary()) -> riak_object().
 from_binary(_B,_K,<<131, _Rest/binary>>=ObjTerm) ->
     binary_to_term(ObjTerm);
-from_binary(B,K,<<?MAGIC:8/integer, 1:8/integer, Rest/binary>>=_ObjBin) ->
+from_binary(B,K,<<?MAGIC:8/integer, 1:8/integer, VclockLen:32/integer, 
+                 VclockBin:VclockLen/binary, SibCount:32/integer, 
+                 SibsBin/binary>>) ->
     %% Version 1 of binary riak object
-    case Rest of
-        <<VclockLen:32/integer, VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> ->
-            Vclock = binary_to_term(VclockBin),
-            Contents = sibs_of_binary(SibCount, SibsBin),
-            #r_object{bucket=B,key=K,contents=Contents,vclock=Vclock};
-        _Other ->
-            {error, bad_object_format}
-    end;
+    Vclock = binary_to_term(VclockBin),
+    Contents = sibs_of_binary(SibCount, SibsBin),
+    #r_object{bucket=B,key=K,contents=Contents,vclock=Vclock};
+from_binary(_B, _K, BadBin) when is_binary(BadBin) ->
+    {error, bad_object_format};
 from_binary(_B, _K, Obj = #r_object{}) ->
     Obj.
 
 sibs_of_binary(Count,SibsBin) ->
-    sibs_of_binary(Count, SibsBin, []).
+    sibs_of_binary(SibsBin, Count, []).
 
-sibs_of_binary(0, <<>>, Result) -> lists:reverse(Result);
-sibs_of_binary(0, _NotEmpty, _Result) ->
+sibs_of_binary(<<>>, 0, Result) when length(Result) =< 1 -> Result;
+sibs_of_binary(<<>>, 0, Result) -> lists:reverse(Result);
+sibs_of_binary(_NotEmpty, 0, _Result) ->
     {error, corrupt_contents};
-sibs_of_binary(Count, SibsBin, Result) ->
-    {Sib, SibsRest} = sib_of_binary(SibsBin),
-    sibs_of_binary(Count-1, SibsRest, [Sib | Result]).
+ 
+sibs_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, 
+                MetaBin:MetaLen/binary, Rest/binary>>, Count, Results) ->
+    <<LMMega:32/integer, LMSecs:32/integer, LMMicro:32/integer, 
+     VTagLen:8/integer, VTag:VTagLen/binary, Deleted:1/binary-unit:8, 
+     MetaRestBin/binary>> = MetaBin,
 
-sib_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary, Rest/binary>>) ->
-    <<LMMega:32/integer, LMSecs:32/integer, LMMicro:32/integer, VTagLen:8/integer, VTag:VTagLen/binary, Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
-
-    MDList0 = deleted_meta(Deleted, []),
-    MDList1 = last_mod_meta({LMMega, LMSecs, LMMicro}, MDList0),
-    MDList2 = vtag_meta(VTag, MDList1),
+    MDList0 = 
+        case Deleted of
+            <<1>> -> [{?MD_DELETED, "true"}];
+            _ -> []
+        end,
+    MDList1 = 
+        case {LMMega, LMSecs, LMMicro} of
+            {0, 0, 0} -> MDList0;
+            LM -> [{?MD_LASTMOD, LM} | MDList0]
+        end,
+    MDList2 = 
+        case VTag of 
+            ?EMPTY_VTAG_BIN -> MDList1;
+            _ -> [{?MD_VTAG, binary_to_list(VTag)} | MDList1]
+        end,
     MDList = meta_of_binary(MetaRestBin, MDList2),
-    MD = orddict:from_list(MDList),
-    {#r_content{metadata=MD, value=decode_maybe_binary(ValBin)}, Rest}.
-
-deleted_meta(<<1>>, MDList) ->
-    [{?MD_DELETED, "true"} | MDList];
-deleted_meta(_, MDList) ->
-    MDList.
-
-last_mod_meta({0, 0, 0}, MDList) ->
-    MDList;
-last_mod_meta(LM, MDList) ->
-    [{?MD_LASTMOD, LM} | MDList].
-
-vtag_meta(?EMPTY_VTAG_BIN, MDList) ->
-    MDList;
-vtag_meta(VTag, MDList) ->
-    [{?MD_VTAG, binary_to_list(VTag)} | MDList].
+    sibs_of_binary(Rest, Count - 1, 
+                   [#r_content{metadata=MDList, 
+                               value=decode_maybe_binary(ValBin)} | Results]).
 
 meta_of_binary(<<>>, Acc) ->
     Acc;
-meta_of_binary(<<KeyLen:32/integer, KeyBin:KeyLen/binary, ValueLen:32/integer, ValueBin:ValueLen/binary, Rest/binary>>, ResultList) ->
+meta_of_binary(<<KeyLen:32/integer, KeyBin:KeyLen/binary, ValueLen:32/integer,
+                ValueBin:ValueLen/binary, Rest/binary>>, ResultList) ->
     Key = decode_maybe_binary(KeyBin),
     Value = decode_maybe_binary(ValueBin),
     meta_of_binary(Rest, [{Key, Value} | ResultList]).
@@ -870,7 +869,7 @@ merge5_test() ->
                  riak_object:syntactic_merge(O2, O1)).
 
 equality1_test() ->
-    MD0 = orddict:new(),
+    MD0 = [],
     MD = orddict:store("X-Riak-Test", "value", MD0),
     O1 = riak_object:new(<<"test">>, <<"a">>, "value"),
     O2 = riak_object:new(<<"test">>, <<"a">>, "value"),
@@ -916,7 +915,7 @@ inequality_bucket_test() ->
     false = riak_object:equal(O1, O2).
 
 inequality_updatecontents_test() ->
-    MD1 = orddict:new(),
+    MD1 = [],
     MD2 = orddict:store("X-Riak-Test", "value", MD1),
     MD3 = orddict:store("X-Riak-Test", "value1", MD1),
     O1 = riak_object:new(<<"test">>, <<"a">>, "value"),
@@ -1056,7 +1055,7 @@ determinstic_most_recent_test() ->
     TPast = httpd_util:rfc1123_date(
               calendar:gregorian_seconds_to_datetime(D-1)),
 
-    Available = orddict:new(),
+    Available = [],
     Deleted = orddict:store(<<"X-Riak-Deleted">>, true, Available),
 
     %% Test all cases with equal timestamps
