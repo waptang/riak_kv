@@ -660,7 +660,7 @@ sibs_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer,
             ?EMPTY_VTAG_BIN -> MDList1;
             _ -> [{?MD_VTAG, binary_to_list(VTag)} | MDList1]
         end,
-    MDList = meta_of_binary(MetaRestBin, MDList2),
+    MDList = lists:usort(meta_of_binary(MetaRestBin, MDList2)),
     sibs_of_binary(Rest, Count - 1, 
                    [#r_content{metadata=MDList, 
                                value=decode_maybe_binary(ValBin)} | Results]).
