@@ -87,7 +87,7 @@ encode(Message) ->
 process(#rpbcountergetreq{bucket=B0, type=T, key=K, r=R0, pr=PR0,
                           notfound_ok=NFOk, basic_quorum=BQ},
         #state{client=C} = State) ->
-    case riak_kv_counter:supported() of
+    case counters_supported() of
         true ->
             R = decode_quorum(R0),
             PR = decode_quorum(PR0),
@@ -97,7 +97,7 @@ process(#rpbcountergetreq{bucket=B0, type=T, key=K, r=R0, pr=PR0,
                            make_option(notfound_ok, NFOk) ++
                            make_option(basic_quorum, BQ)) of
                 {ok, O} ->
-                    Value = riak_kv_counter:value(O),
+                    Value = riak_kv_crdt:value(O),
                     {reply, #rpbcountergetresp{value = Value}, State};
                 {error, notfound} ->
                     {reply, #rpbcountergetresp{}, State};
@@ -111,9 +111,9 @@ process(#rpbcounterupdatereq{bucket=B0, type=T, key=K,  w=W0, dw=DW0, pw=PW0, am
                              returnvalue=RetVal},
         #state{client=C} = State) ->
     B = maybe_bucket_type(T, B0),
-    case {allow_mult(B), riak_kv_counter:supported()} of
+    case {allow_mult(B), counters_supported()} of
         {true, true} ->
-            O = riak_kv_counter:new(B, K),
+            O = riak_kv_crdt:new(B, K, riak_dt_pncounter),
 
             %% erlang_protobuffs encodes as 1/0/undefined
             W = decode_quorum(W0),
@@ -125,7 +125,7 @@ process(#rpbcounterupdatereq{bucket=B0, type=T, key=K,  w=W0, dw=DW0, pw=PW0, am
                 ok ->
                     {reply, #rpbcounterupdateresp{}, State};
                 {ok, RObj} ->
-                    Value = riak_kv_counter:value(RObj),
+                    Value = riak_kv_crdt:value(RObj),
                     {reply, #rpbcounterupdateresp{value=Value}, State};
                 {error, notfound} ->
                     {reply, #rpbcounterupdateresp{}, State};
@@ -182,3 +182,6 @@ bucket_type(undefined, B) ->
 bucket_type(T, B) ->
     {T, B}.
 
+counters_supported() ->
+    riak_kv_crdt:supported(riak_dt_pncounter) orelse
+        riak_kv_crdt:supported(pncounter).
