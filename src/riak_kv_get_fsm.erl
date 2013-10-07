@@ -151,7 +151,7 @@ init([From, Bucket, Key, Options, Monitor]) ->
                                            bkey = {Bucket, Key},
                                            startnow = StartNow}),
     (Monitor =:= true) andalso riak_kv_get_put_monitor:get_fsm_spawned(self()),
-    riak_core_dtrace:put_tag(io_lib:format("~p,~p", [Bucket, Key])),
+    riak_core_dtrace:put_tag([Bucket, <<",">>, Key]),
     ?DTRACE(?C_GET_FSM_INIT, [], ["init"]),
     {ok, prepare, StateData, 0};
 init({test, Args, StateProps}) ->
@@ -175,9 +175,13 @@ init({test, Args, StateProps}) ->
 prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key},
                                   options=Options}) ->
     ?DTRACE(?C_GET_FSM_PREPARE, [], ["prepare"]),
+    {ok, DefaultProps} = application:get_env(riak_core, 
+                                             default_bucket_props),
     BucketProps = riak_core_bucket:get_bucket(Bucket),
+    Props = lists:keymerge(1, lists:keysort(1, BucketProps), 
+                           lists:keysort(1, DefaultProps)),
     DocIdx = riak_core_util:chash_key(BKey),
-    Bucket_N = proplists:get_value(n_val,BucketProps),
+    {_, Bucket_N} = lists:keyfind(n_val, 1, Props),
     N = case proplists:get_value(n_val, Options) of
             undefined ->
                 Bucket_N;
@@ -192,17 +196,22 @@ prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key},
             StateData2 = client_reply(Error, StateData),
             {stop, normal, StateData2};
         _ ->
-            StatTracked = proplists:get_value(stat_tracked, BucketProps, false),
-            Preflist2 = case proplists:get_value(sloppy_quorum, Options, true) of
-                        true ->
-                            UpNodes = riak_core_node_watcher:nodes(riak_kv),
-                            riak_core_apl:get_apl_ann(DocIdx, N, UpNodes);
-                        false ->
-                            riak_core_apl:get_primary_apl(DocIdx, N, riak_kv)
-                    end,
+            StatTracked =
+                case lists:keyfind(stat_tracked, 1, Props) of 
+                    {stat_tracked, Val} -> Val;
+                    _ -> false
+                end,
+            Preflist2 = 
+                case lists:keyfind(sloppy_quorum, 1, Options) of
+                    {sloppy_quorum, false} ->
+                        riak_core_apl:get_primary_apl(DocIdx, N, riak_kv);
+                    _ ->
+                        UpNodes = riak_core_node_watcher:nodes(riak_kv),
+                        riak_core_apl:get_apl_ann(DocIdx, N, UpNodes)
+                end,
             new_state_timeout(validate, StateData#state{starttime=riak_core_util:moment(),
                                                 n = N,
-                                                bucket_props=BucketProps,
+                                                bucket_props=Props,
                                                 preflist2 = Preflist2,
                                                 tracked_bucket = StatTracked})
     end.
@@ -236,7 +245,7 @@ validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
                     _ElseFalse ->
                         N - FailR + 1 % cannot ever get R 'ok' replies
                 end,
-            AllowMult = proplists:get_value(allow_mult,BucketProps),
+            {_, AllowMult} = lists:keyfind(allow_mult, 1, BucketProps),
             NFOk0 = get_option(notfound_ok, Options, default),
             NotFoundOk = riak_kv_util:expand_value(notfound_ok, NFOk0, BucketProps),
             DeletedVClock = get_option(deletedvclock, Options, false),
@@ -474,7 +483,12 @@ read_repair(Indices, RepairObj,
 
 
 get_option(Name, Options, Default) ->
-    proplists:get_value(Name, Options, Default).
+    case lists:keyfind(Name, 1, Options) of
+        {Name, Val} ->
+            Val;
+        false ->
+            Default
+    end.
 
 schedule_timeout(infinity) ->
     undefined;
