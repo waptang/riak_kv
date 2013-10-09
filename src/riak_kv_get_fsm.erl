@@ -151,7 +151,7 @@ init([From, Bucket, Key, Options, Monitor]) ->
                                            bkey = {Bucket, Key},
                                            startnow = StartNow}),
     (Monitor =:= true) andalso riak_kv_get_put_monitor:get_fsm_spawned(self()),
-    riak_core_dtrace:put_tag([Bucket, <<",">>, Key]),
+    riak_core_dtrace:put_tag([Bucket, $,, Key]),
     ?DTRACE(?C_GET_FSM_INIT, [], ["init"]),
     {ok, prepare, StateData, 0};
 init({test, Args, StateProps}) ->
@@ -182,13 +182,13 @@ prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key},
                            lists:keysort(1, DefaultProps)),
     DocIdx = riak_core_util:chash_key(BKey),
     {_, Bucket_N} = lists:keyfind(n_val, 1, Props),
-    N = case proplists:get_value(n_val, Options) of
-            undefined ->
+    N = case lists:keyfind(n_val, 1, Options) of
+            false ->
                 Bucket_N;
-            N_val when is_integer(N_val), N_val > 0, N_val =< Bucket_N ->
+            {n_val, N_val} when is_integer(N_val), N_val > 0, N_val =< Bucket_N ->
                 %% don't allow custom N to exceed bucket N
                 N_val;
-            Bad_N ->
+            {n_val, Bad_N} ->
                 {error, {n_val_violation, Bad_N}}
         end,
     case N of
@@ -412,8 +412,8 @@ maybe_delete(StateData=#state{n = N, preflist2=Sent,
     end.
 
 using_custom_n_val(#state{n=N, bucket_props=BucketProps}) ->
-    case proplists:get_value(n_val, BucketProps) of
-        N ->
+    case lists:keyfind(n_val, 1, BucketProps) of
+        {n_val, N} ->
             false;
         _ ->
             true
