@@ -1,5 +1,5 @@
 -module(riak_kv_vnode_worker).
--export([start_pool/0, start_link/1, vget/5, vput/7]).
+-export([start_link/0, start_link/1, vget/5, vput/7]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -include_lib("riak_kv_vnode.hrl").
@@ -28,14 +28,17 @@
 %% coordinates get/put requests against the backend.
 %%
 
-start_pool() ->
-    PoolArgs = [{worker_module, ?MODULE},
-                {size, 1},           %% TODO: Configure
-                {max_overflow, 100}],%% TODO: Configure
-    WorkerArgs = [],
-    {ok, Pid} = poolboy:start_link(PoolArgs, WorkerArgs),
-    register(?MODULE, Pid), % TOOD: Hacky, find something better.
-    {ok, Pid}.
+%% start_pool() ->
+    %% PoolArgs = [{worker_module, ?MODULE},
+    %%             {size, 1},           %% TODO: Configure
+    %%             {max_overflow, 100}],%% TODO: Configure
+    %% WorkerArgs = [],
+    %% {ok, Pid} = poolboy:start_link(PoolArgs, WorkerArgs),
+    %% register(?MODULE, Pid), % TOOD: Hacky, find something better.
+    %% {ok, Pid}.
+
+start_link() ->
+    start_link([]).
 
 start_link([]) ->
     gen_server:start_link(?MODULE, [], []).
@@ -50,14 +53,24 @@ vput(PutReq, Sender, StartTS, Idx, VId, BE, Trees) ->
 %%     worker_req({handoff_vput, PutReq, StartTS, Idx, VId, BE, Trees}).
 
 worker_req(WorkerReq) ->
-    WorkerTimeout = 100, %% TODO: Something better here
-    case poolboy:checkout(?MODULE, true, WorkerTimeout) of
-        Pid when is_pid(Pid) ->
+    case sidejob_supervisor:start_child(riak_kv_vnode_worker_sj,
+                                   gen_server, start_link,
+                                   [?MODULE, [], []]) of
+        {ok, Pid} ->
             gen_server:cast(Pid, WorkerReq),
             Pid;
-        Other ->
-            Other
+        ER ->
+            ER
     end.
+
+    %% WorkerTimeout = 100, %% TODO: Something better here
+    %% case poolboy:checkout(?MODULE, true, WorkerTimeout) of
+    %%     Pid when is_pid(Pid) ->
+    %%         gen_server:cast(Pid, WorkerReq),
+    %%         Pid;
+    %%     Other ->
+    %%         Other
+    %% end.
 
 init([]) ->
     {ok, undefined}. %% No state needed yet.

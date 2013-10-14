@@ -9,6 +9,7 @@
                   stdlib,
                   sasl,
                   crypto,
+                  sidejob,
                   riak_api,
                   riak_core,
                   erlang_js,

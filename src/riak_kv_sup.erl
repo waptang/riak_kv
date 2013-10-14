@@ -88,9 +88,9 @@ init([]) ->
                       {riak_kv_entropy_manager, start_link, []},
                       permanent, 30000, worker, [riak_kv_entropy_manager]},
 
-    VnodeWorkerPool = {riak_kv_vnode_worker,
-                       {riak_kv_vnode_worker, start_pool, []},
-                       permanent, 30000, worker, [riak_kv_vnode_worker]},
+    %% VnodeWorkerPool = {riak_kv_vnode_worker,
+    %%                    {riak_kv_vnode_worker, start_pool, []},
+    %%                    permanent, 30000, worker, [riak_kv_vnode_worker]},
     LeveldbBackend = {riak_kv_eleveldb_backend3,
                       {riak_kv_eleveldb_backend3, start_link, [[]]},
                       permanent, 30000, worker, [riak_kv_eleveldb_backend3]},
@@ -113,7 +113,7 @@ init([]) ->
         MapJSPool,
         ReduceJSPool,
         HookJSPool,
-        VnodeWorkerPool,
+        %% VnodeWorkerPool,
         LeveldbBackend
     ]),
 

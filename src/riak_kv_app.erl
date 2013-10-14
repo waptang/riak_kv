@@ -41,6 +41,10 @@
 start(_Type, _StartArgs) ->
     riak_core_util:start_app_deps(riak_kv),
 
+    WorkerLimit = app_helper:get_env(riak_kv, vnode_workers, 16000),
+    sidejob:new_resource(riak_kv_vnode_worker_sj, sidejob_supervisor, WorkerLimit),
+    lager:info("KV Worker pool has ~p workers\n", [WorkerLimit]),
+
     %% Look at the epoch and generating an error message if it doesn't match up
     %% to our expectations
     check_epoch(),

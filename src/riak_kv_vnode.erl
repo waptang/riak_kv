@@ -367,35 +367,20 @@ init([Index]) ->
     end.
 
 
-handle_command(?KV_PUT_REQ{bkey=BKey} = Req,
-               Sender, State=#state{idx=Idx, vnodeid=VId,
-                                    mod=Mod, modstate=ModState,
-                                    hashtrees=Trees}) ->
+
+handle_command(?KV_PUT_REQ{bkey=BKey} = Req, Sender, State) ->
     case check_bkey(BKey, Req, Sender, State) of
         {busy, State2} ->
             {noreply, State2};
         {ok, State2} ->
-            StartTS = os:timestamp(),
-            BE = {Mod, ModState},
-            Worker = riak_kv_vnode_worker:vput(Req, Sender, StartTS, Idx, VId, BE, Trees),
-            Fail = fun(Reason) ->
-                           riak_core_vnode:reply(Sender, {dw, Idx, {error, {worker, Reason}}})
-                   end,
-            {noreply, monitor_worker(BKey, Fail, Worker, State2)}
+            execute_command(Req, Sender, State2)
     end;
-handle_command(?KV_GET_REQ{bkey=BKey} = Req,Sender,
-               #state{idx=Idx, mod = Mod, modstate = ModState} = State) ->
+handle_command(?KV_GET_REQ{bkey=BKey} = Req, Sender, State) ->
     case check_bkey(BKey, Req, Sender, State) of
         {busy, State2} ->
             {noreply, State2}; %% handle_command will be re-called once free
         {ok, State2} ->
-            StartTS = os:timestamp(),
-            BE = {Mod, ModState},
-            Worker = riak_kv_vnode_worker:vget(Req, Sender, StartTS, Idx, BE),
-            Fail = fun(Reason) ->
-                           riak_core_vnode:reply(Sender, {r, {error, {worker, Reason}}, Idx})
-                   end,
-            {noreply, monitor_worker(BKey, Fail, Worker, State2)}
+            execute_command(Req, Sender, State2)
     end;
 %% handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Caller}, _Sender,
 %%                State=#state{async_folding=AsyncFolding,
@@ -832,7 +817,13 @@ handle_info({'DOWN', MRef, _, Pid, Reason}, State=#state{active = Active,
                 normal ->
                     ok;
                 _ ->
-                    Fail(Reason)
+                    try
+                        Fail(Reason)
+                    catch
+                        _:Reason2 ->
+                            lager:debug("Vnode worker fail callback crashed on ~p - ~p",
+                                        [Reason, Reason2])
+                    end
             end,
             WorkerMons2 = dict:erase(MRef, WorkerMons),
             %% Check if anything else is queued against this bkey
@@ -844,7 +835,7 @@ handle_info({'DOWN', MRef, _, Pid, Reason}, State=#state{active = Active,
                                      active = dict:erase(BKey, Active)}};
                 [{NextReq, Sender} | _] ->
                     {noreply, State2} =
-                        handle_command(NextReq, Sender,
+                        execute_command(NextReq, Sender,
                                        State#state{worker_mons = WorkerMons2,
                                                    active = dict:store(BKey, Rest, Active)}),
                     {ok, State2}
@@ -896,6 +887,28 @@ monitor_worker(BKey, Fail, Worker, State = #state{worker_mons = WorkerMons}) ->
     %% TODO, some kind of monitor against this bkey.
     MRef = monitor(process, Worker),
     State#state{worker_mons = dict:store(MRef, {BKey, Fail}, WorkerMons)}.
+
+execute_command(?KV_PUT_REQ{bkey=BKey} = Req,
+               Sender, State=#state{idx=Idx, vnodeid=VId,
+                                    mod=Mod, modstate=ModState,
+                                    hashtrees=Trees}) ->
+    StartTS = os:timestamp(),
+    BE = {Mod, ModState},
+    Worker = riak_kv_vnode_worker:vput(Req, Sender, StartTS, Idx, VId, BE, Trees),
+    Fail = fun(Reason) ->
+                   riak_core_vnode:reply(Sender, {dw, Idx, {error, {worker, Reason}}})
+           end,
+    {noreply, monitor_worker(BKey, Fail, Worker, State)};
+execute_command(?KV_GET_REQ{bkey=BKey} = Req,Sender,
+               #state{idx=Idx, mod = Mod, modstate = ModState} = State) ->
+    StartTS = os:timestamp(),
+    BE = {Mod, ModState},
+    Worker = riak_kv_vnode_worker:vget(Req, Sender, StartTS, Idx, BE),
+    Fail = fun(Reason) ->
+                   riak_core_vnode:reply(Sender, {r, {error, {worker, Reason}}, Idx})
+           end,
+    {noreply, monitor_worker(BKey, Fail, Worker, State)}.
+
 
 %% do_reformat({Bucket, Key}=BKey, State=#state{mod=Mod, modstate=ModState}) ->
 %%     case Mod:get(Bucket, Key, ModState) of
