@@ -169,26 +169,29 @@ put(Bucket, PrimaryKey, _IndexSpecs, Val, State=#state{data_ref=DataRef,
         _ ->
             Val1 = {{ts, Now}, Val}
     end,
-    case do_put(Bucket, PrimaryKey, Val1, DataRef) of
-        {ok, Size} ->
-            %% If the memory is capped update timestamp table
-            %% and check if the memory usage is over the cap.
-            case MaxMemory of
-                undefined ->
-                    UsedMemory1 = UsedMemory;
-                _ ->
-                    time_entry(Bucket, PrimaryKey, Now, TimeRef),
-                    Freed = trim_data_table(MaxMemory,
-                                            UsedMemory + Size,
-                                            DataRef,
-                                            TimeRef,
-                                            0),
-                    UsedMemory1 = UsedMemory + Size - Freed
-            end,
-            {ok, State#state{used_memory=UsedMemory1}};
-        {error, Reason} ->
-            {error, Reason, State}
-    end.
+    OldSize = 
+        case ets:lookup(DataRef, {Bucket, PrimaryKey}) of
+            [] ->
+                0;
+            [OldObject] ->
+                object_size(OldObject)
+        end,
+    {ok, Size0} = do_put(Bucket, PrimaryKey, Val1, DataRef),
+    Size = Size0 - OldSize,
+    case MaxMemory of
+        undefined ->
+            UsedMemory1 = UsedMemory;
+        _ ->
+            time_entry(Bucket, PrimaryKey, Now, TimeRef),
+            Freed = trim_data_table(MaxMemory,
+                                    UsedMemory + Size,
+                                    DataRef,
+                                    TimeRef,
+                                    0),
+            UsedMemory1 = UsedMemory + Size - Freed
+    end,
+    {ok, State#state{used_memory=UsedMemory1}}.
+
 
 %% @doc Delete an object from the memory backend
 %% NOTE: The memory backend does not currently
@@ -196,25 +199,27 @@ put(Bucket, PrimaryKey, _IndexSpecs, Val, State=#state{data_ref=DataRef,
 %% parameter is ignored.
 -spec delete(riak_object:bucket(), riak_object:key(), [index_spec()], state()) ->
                     {ok, state()}.
+
 delete(Bucket, Key, _IndexSpecs, State=#state{data_ref=DataRef,
                                               time_ref=TimeRef,
                                               used_memory=UsedMemory}) ->
+    
+    [Object] = ets:lookup(DataRef, {Bucket, Key}),
     case TimeRef of
         undefined ->
-            UsedMemory1 = UsedMemory;
+            ok;
         _ ->
             %% Lookup the object so we can delete its
             %% entry from the time table and account
             %% for the memory used.
-            [Object] = ets:lookup(DataRef, {Bucket, Key}),
             case Object of
                 {_, {{ts, Timestamp}, _}} ->
-                    ets:delete(TimeRef, Timestamp),
-                    UsedMemory1 = UsedMemory - object_size(Object);
+                    ets:delete(TimeRef, Timestamp);
                 _ ->
-                    UsedMemory1 = UsedMemory
+                    ok
             end
     end,
+    UsedMemory1 = UsedMemory - object_size(Object),
     ets:delete(DataRef, {Bucket, Key}),
     {ok, State#state{used_memory=UsedMemory1}}.
 
