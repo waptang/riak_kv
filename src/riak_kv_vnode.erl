@@ -125,13 +125,14 @@ maybe_create_hashtrees(State) ->
 -spec maybe_create_hashtrees(boolean(), state()) -> state().
 maybe_create_hashtrees(false, State) ->
     State;
-maybe_create_hashtrees(true, State=#state{idx=Index}) ->
+maybe_create_hashtrees(true, State=#state{idx=Index, mod=Mod, modstate=ModState}) ->
     %% Only maintain a hashtree if a primary vnode
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     case riak_core_ring:vnode_type(Ring, Index) of
         primary ->
             RP = riak_kv_util:responsible_preflists(Index),
-            case riak_kv_index_hashtree:start(Index, RP, self()) of
+            RP2 = add_2i_index_rp(RP, Mod:capabilities(ModState)),
+            case riak_kv_index_hashtree:start(Index, RP2, self()) of
                 {ok, Trees} ->
                     monitor(process, Trees),
                     State#state{hashtrees=Trees};
@@ -143,6 +144,16 @@ maybe_create_hashtrees(true, State=#state{idx=Index}) ->
             end;
         _ ->
             State
+    end.
+
+%% Use special magic index_n for
+%% 2i index specs hashtree ID.
+add_2i_index_rp(RP, Capabilities) ->
+    case lists:member(indexes, Capabilities) of
+        true ->
+            [riak_kv_index_hashtree:index_2i_n() | RP];
+        false ->
+            RP
     end.
 
 %% API
@@ -495,6 +506,7 @@ handle_command({hashtree_pid, Node}, _, State=#state{hashtrees=HT}) ->
 handle_command({rehash, Bucket, Key}, _, State=#state{mod=Mod, modstate=ModState}) ->
     case do_get_binary(Bucket, Key, Mod, ModState) of
         {ok, Bin, _UpdModState} ->
+            %% If index has specs too (bin to obj etc)
             update_hashtree(Bucket, Key, Bin, State);
         _ ->
             %% Make sure hashtree isn't tracking deleted data
@@ -1070,7 +1082,7 @@ perform_put({true, Obj},
                      index_specs=IndexSpecs}) ->
     case encode_and_put(Obj, Mod, Bucket, Key, IndexSpecs, ModState) of
         {{ok, UpdModState}, EncodedVal} ->
-            update_hashtree(Bucket, Key, EncodedVal, State),
+            update_hashtree(Bucket, Key, EncodedVal, IndexSpecs,  State),
             case RB of
                 true ->
                     Reply = {dw, Idx, Obj, ReqID};
@@ -1394,7 +1406,7 @@ do_diffobj_put({Bucket, Key}, DiffObj,
             case encode_and_put(DiffObj, Mod, Bucket, Key,
                                 IndexSpecs, ModState) of
                 {{ok, _UpdModState} = InnerRes, EncodedVal} ->
-                    update_hashtree(Bucket, Key, EncodedVal, StateData),
+                    update_hashtree(Bucket, Key, EncodedVal, IndexSpecs, StateData),
                     update_index_write_stats(IndexBackend, IndexSpecs),
                     update_vnode_stats(vnode_put, Idx, StartTS),
                     InnerRes;
@@ -1419,7 +1431,7 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                     case encode_and_put(AMObj, Mod, Bucket, Key,
                                         IndexSpecs, ModState) of
                         {{ok, _UpdModState} = InnerRes, EncodedVal} ->
-                            update_hashtree(Bucket, Key, EncodedVal, StateData),
+                            update_hashtree(Bucket, Key, EncodedVal, IndexSpecs, StateData),
                             update_index_write_stats(IndexBackend, IndexSpecs),
                             update_vnode_stats(vnode_put, Idx, StartTS),
                             InnerRes;
@@ -1440,6 +1452,11 @@ update_hashtree(Bucket, Key, Val, #state{hashtrees=Trees}) ->
             put(hashtree_tokens, max_hashtree_tokens()),
             ok
     end.
+
+-spec update_hashtree(binary(), binary(), binary(), index_specs(), state()) -> ok.
+update_hashtree(Bucket, Key, Val, IndexSpecs, State) ->
+    #state{hashtrees=Trees, mod=Mod, modstate=ModState} = State,
+    
 
 get_hashtree_token() ->
     Tokens = get(hashtree_tokens),

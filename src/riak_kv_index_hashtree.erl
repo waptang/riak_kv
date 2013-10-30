@@ -46,10 +46,14 @@
          delete/2,
          insert/4,
          insert/5,
+         insert_all/3,
+         insert_all/4,
          insert_object/3,
          async_insert_object/3,
+         async_insert_all/3,
          stop/1,
-         destroy/1]).
+         destroy/1,
+         index_2i_n/0]).
 
 -export([poke/1]).
 
@@ -107,6 +111,23 @@ insert(_Id, _Key, _Hash, undefined, _Options) ->
 insert(Id, Key, Hash, Tree, Options) ->
     catch gen_server:call(Tree, {insert, Id, Key, Hash, Options}, infinity).
 
+%% @doc A variant of {@link insert/4} that accepts a list of Hashes to insert
+%% where `Hashes' is a list of `{Key::binary(), Hash::binary()}' pairs
+-spec insert_all(index_n(), [{binary(), binary()}], pid()) -> ok.
+insert_all(Id, Hashes, Tree) ->
+    insert_all(Id, Hashes, Tree, []).
+
+%% @doc A variant of {@link insert_all/3} that takes an option list.
+%% @see insert/5 for valid options
+-spec insert_all(index_n(), [{binary(), binary()}], pid(), proplist()) -> ok.
+insert_all(Id, Hashes, Tree, Options) ->
+    catch gen_server:call(Tree, {insert_all, Id, Hashes, Options}, infinity).
+
+%% @doc Async variant of {@link insert_all/3}
+-spec async_insert_all(index_n(), [{binary(), binary()}], pid()) -> ok.
+async_insert_all(Id, Hashes, Tree) ->
+    gen_server:cast(Tree, {insert_all, Id, Hashes}).
+
 %% @doc Add an encoded (binary) riak_object associated with a given
 %%      bucket/key to the appropriate hashtree managed by the provided
 %%      index_hashtree pid. The hash value is generated using
@@ -129,6 +150,11 @@ delete(_BKey, undefined) ->
     ok;
 delete(BKey, Tree) ->
     catch gen_server:call(Tree, {delete, BKey}, infinity).
+
+%% @doc Remove the key/hash pairs associated with the given keys
+-spec delete_all([binary()], pid()) -> ok.
+delete_all(Keys, Tree) ->
+    catch gen_server:call(Tree, {delete_all, Keys}, infinity).
 
 %% @doc Called by the entropy manager to finish the process used to acquire
 %%      remote vnode locks when starting an exchange. For more details,
@@ -238,6 +264,12 @@ handle_call({get_lock, Type, Pid}, _From, State) ->
 handle_call({insert, Id, Key, Hash, Options}, _From, State) ->
     State2 = do_insert(Id, Key, Hash, Options, State),
     {reply, ok, State2};
+handle_call({insert_all, Id, Hashes, Options}, _From, State) ->
+    State2 = lists:foldl(fun({Key, Hash}, StateAcc) ->
+                                 do_insert(Id, Key, Hash, Options, StateAcc) end,
+                         Hashes,
+                         State),
+    {reply, ok, State2};
 handle_call({insert_object, BKey, RObj}, _From, State) ->
     IndexN = riak_kv_util:get_index_n(BKey),
     State2 = do_insert(IndexN, term_to_binary(BKey), hash_object(BKey, RObj), [], State),
@@ -299,6 +331,13 @@ handle_cast(stop, State) ->
 handle_cast({insert_object, BKey, RObj}, State) ->
     IndexN = riak_kv_util:get_index_n(BKey),
     State2 = do_insert(IndexN, term_to_binary(BKey), hash_object(BKey, RObj), [], State),
+    {noreply, State2};
+
+handle_cast({insert_all, Id, Hashes, Options}, State) ->
+    State2 = lists:foldl(fun({Key, Hash}, StateAcc) ->
+                                 do_insert(Id, Key, Hash, Options, StateAcc) end,
+                         Hashes,
+                         State),
     {noreply, State2};
 
 handle_cast(build_failed, State) ->
@@ -393,19 +432,61 @@ hash_object({Bucket, Key}, RObjBin) ->
 %% incoming write triggers a real-time insert of a key/hash pair for an object
 %% before the fold reaches the now out-of-date version of the object, the old
 %% key/hash pair will be ignored.
--spec fold_keys(index(), pid()) -> ok.
-fold_keys(Partition, Tree) ->
-    Req = ?FOLD_REQ{foldfun=fun(BKey={Bucket,Key}, RObj, _) ->
-                                    IndexN = riak_kv_util:get_index_n({Bucket, Key}),
-                                    insert(IndexN, term_to_binary(BKey), hash_object(BKey, RObj),
-                                           Tree, [if_missing]),
-                                    ok
-                            end,
-                    acc0=ok},
+%% If `HasIndexTree` is true, also update the index spec tree.
+-spec fold_keys(index(), pid(), boolean()) -> ok.
+fold_keys(Partition, Tree, HasIndexTree) ->
+    FoldFun = fold_fun(Tree, HasIndexTree),
+    Req = ?FOLD_REQ{foldfun=FoldFun, acc0=ok},
     riak_core_vnode_master:sync_command({Partition, node()},
                                         Req,
                                         riak_kv_vnode_master, infinity),
     ok.
+
+%% @doc Generate the folding function
+%% for a riak fold_req
+-spec fold_fun(pid(), boolean()) -> fun().
+fold_fun(Tree, false) ->
+    ObjectFoldFun = object_fold_fun(Tree),
+    fun(BKey, RObj, _) ->
+            ObjectFoldFun(BKey, RObj),
+            ok
+    end;
+fold_fun(Tree, true) ->
+    %% Index AAE backend, so hash the indexes
+    ObjectFoldFun = object_fold_fun(Tree),
+    IndexFoldFun = index_fold_fun(Tree),
+    fun(BKey, RObj, _) ->
+            BinBKey = term_to_binary(BKey),
+            ObjectFoldFun(BKey, RObj, BinBKey),
+            IndexFoldFun(RObj, BinBKey),
+            ok
+    end.
+
+-spec object_fold_fun(pid()) -> fun().
+object_fold_fun(Tree) ->
+    fun(BKey={Bucket,Key}, RObj, BinBKey) ->
+            IndexN = riak_kv_util:get_index_n({Bucket, Key}),
+            insert(IndexN, BinBKey, hash_object(BKey, RObj),
+                   Tree, [if_missing])
+    end.
+
+-spec index_fold_fun(pid()) -> fun().
+index_fold_fun(Tree) ->
+    fun(RObj, BinBKey) ->
+            IndexData = riak_object:index_data(RObj),
+            [insert(index_2i_n(),
+                   BinBKey, hash_2i(IndexDatum),
+                   Tree, [if_missing]) || IndexDatum <- IndexData]
+    end.
+
+%% @Doc the 2i index hashtree as a Magic index_n of {0, 0}
+-spec index_2i_n() -> index_n().
+index_2i_n() ->
+    {0, 0}.
+
+-spec hash_2i({binary(), integer() | binary()}) -> binary().
+hash_2i(IndexDatum) ->
+    crypto:sha(term_to_binary(IndexDatum)).
 
 %% Generate a new {@link hashtree} for the specified `index_n'. If this is
 %% the first hashtree created by this index_hashtree, then open/create a new
@@ -673,8 +754,8 @@ build_or_rehash(Self, State=#state{index=Index, trees=Trees}) ->
     case {Lock, Type} of
         {ok, build} ->
             lager:debug("Starting build: ~p", [Index]),
-            fold_keys(Index, Self),
-            lager:debug("Finished build (a): ~p", [Index]), 
+            fold_keys(Index, Self, has_index_tree(Trees)),
+            lager:debug("Finished build (a): ~p", [Index]),
             gen_server:cast(Self, build_finished);
         {ok, rehash} ->
             lager:debug("Starting rehash: ~p", [Index]),
@@ -684,6 +765,11 @@ build_or_rehash(Self, State=#state{index=Index, trees=Trees}) ->
         {_Error, _} ->
             gen_server:cast(Self, build_failed)
     end.
+
+%% Check if the trees contain the magic index tree
+-spec has_index_tree(orddict()) -> boolean().
+has_index_tree(Trees) ->
+    orddict:is_key(index_2i_n(), Trees).
 
 close_trees(State=#state{trees=Trees}) ->
     Trees2 = [{IdxN, hashtree:close(Tree)} || {IdxN, Tree} <- Trees],
