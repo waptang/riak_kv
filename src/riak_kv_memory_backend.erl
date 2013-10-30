@@ -208,6 +208,13 @@ put(Bucket, PrimaryKey, IndexSpecs, Val, State=#state{data_ref=DataRef,
         _ ->
             Val1 = {{ts, Now}, Val}
     end,
+    OldSize = 
+        case ets:lookup(DataRef, {Bucket, PrimaryKey}) of
+            [] ->
+                0;
+            [OldObject] ->
+                object_size(OldObject)
+        end,
     {ok, Size} = do_put(Bucket, PrimaryKey, Val1, IndexSpecs, DataRef, IndexRef),
     case MaxMemory of
         undefined ->
@@ -222,7 +229,8 @@ put(Bucket, PrimaryKey, IndexSpecs, Val, State=#state{data_ref=DataRef,
                                     0),
             UsedMemory1 = UsedMemory + Size - Freed
     end,
-    {ok, State#state{used_memory=UsedMemory1}}.
+    UsedMemory2 = UsedMemory1 - OldSize,
+    {ok, State#state{used_memory=UsedMemory2}}.
 
 %% @doc Delete an object from the memory backend
 -spec delete(riak_object:bucket(), riak_object:key(), [index_spec()], state()) ->
@@ -231,22 +239,23 @@ delete(Bucket, Key, IndexSpecs, State=#state{data_ref=DataRef,
                                              index_ref=IndexRef,
                                              time_ref=TimeRef,
                                              used_memory=UsedMemory}) ->
+    
+    [Object] = ets:lookup(DataRef, {Bucket, Key}),
     case TimeRef of
         undefined ->
-            UsedMemory1 = UsedMemory;
+            ok;
         _ ->
             %% Lookup the object so we can delete its
             %% entry from the time table and account
             %% for the memory used.
-            [Object] = ets:lookup(DataRef, {Bucket, Key}),
             case Object of
                 {_, {{ts, Timestamp}, _}} ->
-                    ets:delete(TimeRef, Timestamp),
-                    UsedMemory1 = UsedMemory - object_size(Object);
+                    ets:delete(TimeRef, Timestamp);
                 _ ->
-                    UsedMemory1 = UsedMemory
+                    ok
             end
     end,
+    UsedMemory1 = UsedMemory - object_size(Object),
     update_indexes(Bucket, Key, IndexSpecs, IndexRef),
     ets:delete(DataRef, {Bucket, Key}),
     {ok, State#state{used_memory=UsedMemory1}}.
